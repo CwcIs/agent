@@ -1,0 +1,5 @@
+{"id":"g001","input":"今天开会聊了三件事：第一，用户留存问题，可能和onboarding有关；第二，下季度要做B端；第三，技术债太多要还。","expected_titles":["用户留存与onboarding","下季度B端规划","技术债清理"],"expected_tags":["用户留存","onboarding","B端","技术债"],"prompt_version":"v1"}
+{"id":"g002","input":"我觉得应该先做B端，B端收入能养活C端增长。但去年3月我写过B端会拖慢节奏。","expected_titles":["B端优先 vs C端增长策略权衡"],"expected_tags":["B端","C端","增长","决策"],"prompt_version":"v1"}
+{"id":"g003","input":"读了《原子习惯》，核心观点是小习惯积累带来大变化，让我想到团队周会太长的老问题——也许该从缩短5分钟开始。","expected_titles":["原子习惯读书摘要","缩短周会的渐进改善"],"expected_tags":["阅读","原子习惯","团队效率","改进"],"prompt_version":"v1"}
+{"id":"g004","input":"用户反馈onboarding流程太长，7步才能完成注册。我们自己的数据也显示第4步流失了60%。","expected_titles":["Onboarding流程优化：7步→?步"],"expected_tags":["onboarding","用户体验","数据","流失"],"prompt_version":"v1"}
+{"id":"g005","input":"技术栈选型纠结：Go vs Node.js。Go性能好但团队不熟，Node.js生态丰富但内存管理麻烦。","expected_titles":["技术栈选型：Go vs Node.js"],"expected_tags":["技术选型","Go","Node.js","团队能力"],"prompt_version":"v1"}

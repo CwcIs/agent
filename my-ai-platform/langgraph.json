@@ -1,0 +1,10 @@
+{
+  "graphs": {
+    "react_tool_loop": "packages/api/src/agent/graphs/react_tool_loop.py",
+    "a2a_orchestration": "packages/api/src/agent/graphs/a2a_orchestration.py",
+    "capture_note": "packages/api/src/agent/graphs/capture_note.py",
+    "daily_digest": "packages/api/src/agent/graphs/daily_digest.py",
+    "idea_collision": "packages/api/src/agent/graphs/idea_collision.py"
+  },
+  "python_version": "3.11"
+}

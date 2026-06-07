@@ -1,0 +1,31 @@
+[project]
+name = "my-ai-api"
+version = "0.0.1"
+description = "个人 Multi-Agent 知识工作台 — FastAPI + LangChain + LangGraph"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "langchain>=0.3.0",
+    "langgraph>=0.2.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-openai>=0.3.0",
+    "langchain-google-genai>=2.0.0",
+    "langchain-community>=0.3.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "sse-starlette>=2.0.0",
+    "sqlite-vec>=0.1.0",
+]
+
+[project.scripts]
+dev = "src.main:dev"
+cli = "src.cli:main"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]

@@ -1,0 +1,17 @@
+{
+  "name": "my-ai-platform",
+  "version": "0.0.1",
+  "private": true,
+  "description": "个人 Multi-Agent 知识工作台 — 碎片输入 → 结构化笔记 + 跨笔记语义检索 + 想法碰撞",
+  "scripts": {
+    "dev": "cd packages/api && uvicorn src.main:app --reload --port 3000 & cd packages/web && pnpm dev",
+    "dev:api": "cd packages/api && uvicorn src.main:app --reload --port 3000",
+    "dev:web": "cd packages/web && pnpm dev",
+    "build:web": "cd packages/web && pnpm build",
+    "lint": "ruff check packages/api/src",
+    "format": "ruff format packages/api/src",
+    "eval": "python evals/run.py",
+    "cli": "python -m packages.api.src.cli",
+    "seed": "python scripts/seed-notes.py"
+  }
+}

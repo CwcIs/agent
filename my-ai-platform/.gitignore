@@ -7,3 +7,5 @@ dist/
 data/
 .turbo/
 .DS_Store
+
+CLAUDE.md

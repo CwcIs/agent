@@ -13,3 +13,72 @@
 #   4. 注册 LangGraph 图（agent/graphs/）
 #   5. uvicorn 启动
 # ============================================================
+
+import os
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+load_dotenv()
+
+# ── 1. 启动时校验必填环境变量（fail-fast） ────────────────
+_REQUIRED_ENV = ["ANTHROPIC_API_KEY"]
+
+def _check_env() -> None:
+    missing = [k for k in _REQUIRED_ENV if not os.getenv(k)]
+    if missing:
+        print(f"[ERROR] 缺少必填环境变量: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
+_check_env()
+
+# ── 2. 初始化 SQLite ──────────────────────────────────────
+from src.db.schema import get_conn, init_db
+
+_conn = get_conn()
+init_db(_conn)
+
+CHECKPOINT_DB = Path(__file__).parent.parent / "data" / "checkpoint.db"
+
+# ── 3+4. lifespan：启动 AsyncSqliteSaver + 构建 LangGraph 图 ──
+from src.agent.graphs.react_tool_loop import build_graph
+from src.routes import router, set_globals
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    CHECKPOINT_DB.parent.mkdir(parents=True, exist_ok=True)
+    async with AsyncSqliteSaver.from_conn_string(str(CHECKPOINT_DB)) as checkpointer:
+        graph = build_graph(_conn, checkpointer)
+        set_globals(graph, _conn)
+        yield
+    _conn.close()
+
+# ── 5. FastAPI 应用 ───────────────────────────────────────
+app = FastAPI(
+    title="My AI Platform",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # Vue dev server
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(router)
+
+
+def dev():
+    import uvicorn
+    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)
+
+
+if __name__ == "__main__":
+    dev()

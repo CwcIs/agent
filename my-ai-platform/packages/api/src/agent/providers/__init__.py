@@ -11,6 +11,4 @@
 #   Phase 1 就接三家，分不清差异是模型还是 prompt 导致的。
 #   多模型推迟到 Phase 2 末尾，且要做 A/B 测试。
 
-from .claude import create_claude_adapter
-from .gpt import create_gpt_adapter      # Phase 2
-from .gemini import create_gemini_adapter # Phase 3
+from .deepseek import make_deepseek

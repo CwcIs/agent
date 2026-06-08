@@ -15,3 +15,64 @@
 #     导致"用了 Agent 但没看见 Agent"）
 #   - Tool Loop 自己手写在 react_tool_loop.py
 # ============================================================
+
+import json
+import sqlite3
+import uuid
+from typing import Optional
+
+from langchain_core.tools import tool
+
+
+def make_tools(conn: sqlite3.Connection) -> list:
+    """
+    工厂函数：传入 db 连接，返回绑定了连接的工具列表。
+    这样 react_tool_loop.py 只需要调 make_tools(conn) 就拿到两个工具。
+    """
+
+    @tool
+    def search_notes(query: str, k: int = 5) -> str:
+        """
+        用关键词搜索笔记库，返回最多 k 条匹配笔记（JSON 字符串）。
+        搜索范围：标题 + 正文全文检索（FTS5）。
+        只返回 status='live' 的笔记。
+        """
+        rows = conn.execute(
+            """
+            SELECT n.id, n.title, n.content, n.tags_json, n.created_at
+            FROM notes_fts f
+            JOIN notes n ON n.rowid = f.rowid
+            WHERE notes_fts MATCH ?
+              AND n.status = 'live'
+              AND n.deleted_at IS NULL
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (query, k),
+        ).fetchall()
+        results = [dict(r) for r in rows]
+        # tags_json 是 JSON 字符串，解析成列表方便模型读
+        for r in results:
+            r["tags"] = json.loads(r.pop("tags_json", "[]"))
+        return json.dumps(results, ensure_ascii=False)
+
+    @tool
+    def save_note(title: str, content: str, tags: Optional[str] = "") -> str:
+        """
+        把一条新笔记保存到笔记库。
+        tags 用逗号分隔，例如 '产品,增长'。
+        返回新笔记的 id。
+        """
+        note_id = str(uuid.uuid4())
+        tags_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
+        conn.execute(
+            """
+            INSERT INTO notes (id, title, content, tags_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (note_id, title, content, json.dumps(tags_list, ensure_ascii=False)),
+        )
+        conn.commit()
+        return json.dumps({"status": "ok", "id": note_id, "title": title}, ensure_ascii=False)
+
+    return [search_notes, save_note]

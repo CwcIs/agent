@@ -29,6 +29,7 @@
   curl "http://localhost:3000/chat/stream?q=你好&thread_id=abc"  ← 裸 SSE
 """
 import os, json, sqlite3
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 from dotenv import load_dotenv
@@ -39,7 +40,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from typing_extensions import TypedDict
 
 from fastapi import FastAPI
@@ -122,11 +123,17 @@ def build_graph(checkpointer):
     )
 
 # ========== FastAPI ==========
-app = FastAPI(title="My AI Platform — Full Stack Playground")
+# astream_events() 是异步的，checkpointer 也必须用 AsyncSqliteSaver（不能用同步 SqliteSaver）
+graph = None
 
-# SqliteSaver 在应用启动时打开，关闭时释放
-_saver = SqliteSaver.from_conn_string(str(CHECKPOINT_DB))
-graph = build_graph(_saver)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global graph
+    async with AsyncSqliteSaver.from_conn_string(str(CHECKPOINT_DB)) as checkpointer:
+        graph = build_graph(checkpointer)
+        yield
+
+app = FastAPI(title="My AI Platform — Full Stack Playground", lifespan=lifespan)
 
 async def sse_stream(user_message: str, thread_id: str):
     """

@@ -46,7 +46,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
-from src.agent.providers.claude import make_claude
+from src.agent.providers.deepseek import make_deepseek
 from src.tools import make_tools
 
 # MAX_TOOL_LOOP_ITERATIONS = 10（MD §3.5）
@@ -75,7 +75,7 @@ def build_graph(
     checkpointer — AsyncSqliteSaver（多轮对话持久化）
     """
     tools = make_tools(conn)
-    llm = make_claude(tools)
+    llm = make_deepseek(tools)
 
     def call_model(state: AgentState) -> dict:
         msgs = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]

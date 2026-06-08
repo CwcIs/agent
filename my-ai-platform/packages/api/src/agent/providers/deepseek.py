@@ -17,17 +17,18 @@
 
 import os
 
-from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 
 
-def make_claude(tools: list | None = None) -> ChatAnthropic:
+def make_deepseek(tools: list | None = None) -> ChatOpenAI:
     """
-    返回一个绑定了工具的 ChatAnthropic 实例。
-    Phase 1 用 claude-3-5-haiku（速度快、成本低）。
+    返回一个绑定了工具的 ChatOpenAI 实例（指向 DeepSeek）。
+    Phase 1 用 deepseek-chat（成本低、工具调用稳定）。
     """
-    llm = ChatAnthropic(
-        model="claude-3-5-haiku-20241022",
-        api_key=os.environ["ANTHROPIC_API_KEY"],
+    llm = ChatOpenAI(
+        model="deepseek-chat",
+        openai_api_key=os.environ["DEEPSEEK_API_KEY"],
+        openai_api_base="https://api.deepseek.com",
         max_tokens=1024,
     )
     if tools:

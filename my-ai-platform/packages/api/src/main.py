@@ -27,7 +27,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 load_dotenv()
 
 # ── 1. 启动时校验必填环境变量（fail-fast） ────────────────
-_REQUIRED_ENV = ["ANTHROPIC_API_KEY"]
+_REQUIRED_ENV = ["DEEPSEEK_API_KEY"]
 
 def _check_env() -> None:
     missing = [k for k in _REQUIRED_ENV if not os.getenv(k)]

@@ -35,3 +35,67 @@
 #     → tool_use(saveNote) → tool_result → text("已保存")
 #   这串序列出现一次，"我懂 Agent 是怎么自己干活的"才算落地。
 # ============================================================
+
+import sqlite3
+from typing import Annotated
+
+from langchain_core.messages import BaseMessage, SystemMessage
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+from typing_extensions import TypedDict
+
+from src.agent.providers.claude import make_claude
+from src.tools import make_tools
+
+# MAX_TOOL_LOOP_ITERATIONS = 10（MD §3.5）
+# LangGraph 用 recursion_limit 控制，传给 compile() 的 config
+MAX_ITERATIONS = 10
+
+SYSTEM_PROMPT = """你是用户的个人知识助手，用中文回答。
+你有两个工具：
+- search_notes：在笔记库里关键词检索
+- save_note：把重要内容存成笔记
+
+需要查资料时先搜索，用户要求保存时再存。"""
+
+
+class AgentState(TypedDict):
+    messages: Annotated[list[BaseMessage], add_messages]
+
+
+def build_graph(
+    conn: sqlite3.Connection,
+    checkpointer: AsyncSqliteSaver,
+):
+    """
+    构建 ReAct 图并编译。
+    conn         — 业务 DB 连接（tools 用）
+    checkpointer — AsyncSqliteSaver（多轮对话持久化）
+    """
+    tools = make_tools(conn)
+    llm = make_claude(tools)
+
+    def call_model(state: AgentState) -> dict:
+        msgs = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
+        response = llm.invoke(msgs)
+        return {"messages": [response]}
+
+    def should_continue(state: AgentState) -> str:
+        last = state["messages"][-1]
+        return "tools" if getattr(last, "tool_calls", None) else END
+
+    graph = (
+        StateGraph(AgentState)
+        .add_node("call_model", call_model)
+        .add_node("tools", ToolNode(tools))
+        .set_entry_point("call_model")
+        .add_conditional_edges("call_model", should_continue)
+        .add_edge("tools", "call_model")
+        .compile(
+            checkpointer=checkpointer,
+            # recursion_limit 限制最大循环轮数，防止死循环
+        )
+    )
+    return graph

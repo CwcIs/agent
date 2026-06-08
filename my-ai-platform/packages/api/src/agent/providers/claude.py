@@ -14,3 +14,22 @@
 #   一次 messages.create / stream 调用本身不循环，
 #   循环在 react_tool_loop.py 的 runToolLoop（MD §3.3.2）
 # ============================================================
+
+import os
+
+from langchain_anthropic import ChatAnthropic
+
+
+def make_claude(tools: list | None = None) -> ChatAnthropic:
+    """
+    返回一个绑定了工具的 ChatAnthropic 实例。
+    Phase 1 用 claude-3-5-haiku（速度快、成本低）。
+    """
+    llm = ChatAnthropic(
+        model="claude-3-5-haiku-20241022",
+        api_key=os.environ["ANTHROPIC_API_KEY"],
+        max_tokens=1024,
+    )
+    if tools:
+        return llm.bind_tools(tools)
+    return llm

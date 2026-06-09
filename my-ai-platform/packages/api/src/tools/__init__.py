@@ -22,6 +22,7 @@ import uuid
 from typing import Optional
 
 from langchain_core.tools import tool
+from src.lib.embeddings import upsert_embedding, search_similar
 
 
 def make_tools(conn: sqlite3.Connection) -> list:
@@ -33,27 +34,52 @@ def make_tools(conn: sqlite3.Connection) -> list:
     @tool
     def search_notes(query: str, k: int = 5) -> str:
         """
-        用关键词搜索笔记库，返回最多 k 条匹配笔记（JSON 字符串）。
-        搜索范围：标题 + 正文全文检索（FTS5）。
+        搜索笔记库，返回最多 k 条相关笔记（JSON 字符串）。
+        优先使用语义向量搜索；若向量表为空则 fallback 到关键词检索。
         只返回 status='live' 的笔记。
         """
-        rows = conn.execute(
-            """
-            SELECT n.id, n.title, n.content, n.tags_json, n.created_at
-            FROM notes_fts f
-            JOIN notes n ON n.rowid = f.rowid
-            WHERE notes_fts MATCH ?
-              AND n.status = 'live'
-              AND n.deleted_at IS NULL
-            ORDER BY rank
-            LIMIT ?
-            """,
-            (query, k),
-        ).fetchall()
-        results = [dict(r) for r in rows]
-        # tags_json 是 JSON 字符串，解析成列表方便模型读
-        for r in results:
-            r["tags"] = json.loads(r.pop("tags_json", "[]"))
+        results = []
+
+        # 尝试向量搜索
+        try:
+            hits = search_similar(conn, query, k)
+            if hits:
+                ids = [h["note_id"] for h in hits]
+                placeholders = ",".join("?" * len(ids))
+                rows = conn.execute(
+                    f"SELECT id, title, content, tags_json, created_at FROM notes "
+                    f"WHERE id IN ({placeholders}) AND status='live' AND deleted_at IS NULL",
+                    ids,
+                ).fetchall()
+                id_order = {nid: i for i, nid in enumerate(ids)}
+                rows_sorted = sorted(rows, key=lambda r: id_order.get(dict(r)["id"], 999))
+                for r in rows_sorted:
+                    d = dict(r)
+                    d["tags"] = json.loads(d.pop("tags_json", "[]"))
+                    results.append(d)
+        except Exception:
+            pass
+
+        # fallback：FTS5 关键词检索
+        if not results:
+            rows = conn.execute(
+                """
+                SELECT n.id, n.title, n.content, n.tags_json, n.created_at
+                FROM notes_fts f
+                JOIN notes n ON n.rowid = f.rowid
+                WHERE notes_fts MATCH ?
+                  AND n.status = 'live'
+                  AND n.deleted_at IS NULL
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (query, k),
+            ).fetchall()
+            for r in rows:
+                d = dict(r)
+                d["tags"] = json.loads(d.pop("tags_json", "[]"))
+                results.append(d)
+
         return json.dumps(results, ensure_ascii=False)
 
     @tool
@@ -73,6 +99,10 @@ def make_tools(conn: sqlite3.Connection) -> list:
             (note_id, title, content, json.dumps(tags_list, ensure_ascii=False)),
         )
         conn.commit()
+        try:
+            upsert_embedding(conn, note_id, f"{title}\n{content}")
+        except Exception:
+            pass
         return json.dumps({"status": "ok", "id": note_id, "title": title}, ensure_ascii=False)
 
     @tool

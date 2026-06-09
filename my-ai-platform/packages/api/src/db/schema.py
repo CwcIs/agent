@@ -27,6 +27,7 @@
 # ============================================================
 
 import sqlite3
+import sqlite_vec
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "app.db"
@@ -36,6 +37,9 @@ def get_conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -149,6 +153,14 @@ def init_db(conn: sqlite3.Connection) -> None:
             pass_rate      REAL NOT NULL DEFAULT 0.0,
             details        TEXT NOT NULL DEFAULT '[]',
             created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+
+        -- ⑦ embedding_meta — embedding 模型指纹，换模型时只加一行
+        CREATE TABLE IF NOT EXISTS embedding_meta (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_id   TEXT NOT NULL,
+            dim        INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
     """)

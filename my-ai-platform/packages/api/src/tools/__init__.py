@@ -75,4 +75,35 @@ def make_tools(conn: sqlite3.Connection) -> list:
         conn.commit()
         return json.dumps({"status": "ok", "id": note_id, "title": title}, ensure_ascii=False)
 
-    return [search_notes, save_note]
+    @tool
+    def get_notes_summary() -> str:
+        """
+        获取笔记库的聚合统计摘要：总数、最近7天新增、各标签分布。
+        用户问"我有什么笔记"、"笔记概况"、"笔记库里有什么"时优先调用此工具。
+        """
+        total = conn.execute(
+            "SELECT COUNT(*) FROM notes WHERE status='live' AND deleted_at IS NULL"
+        ).fetchone()[0]
+
+        recent = conn.execute(
+            "SELECT COUNT(*) FROM notes WHERE status='live' AND deleted_at IS NULL "
+            "AND created_at >= datetime('now', '-7 days')"
+        ).fetchone()[0]
+
+        tag_rows = conn.execute(
+            "SELECT tags_json FROM notes WHERE status='live' AND deleted_at IS NULL"
+        ).fetchall()
+        tag_counts: dict[str, int] = {}
+        for row in tag_rows:
+            for tag in json.loads(row[0] or "[]"):
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        top_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:8]
+        tags_str = "、".join(f"{t}({n})" for t, n in top_tags) if top_tags else "暂无标签"
+
+        return json.dumps({
+            "total": total,
+            "recent_7d": recent,
+            "top_tags": tags_str,
+        }, ensure_ascii=False)
+
+    return [search_notes, save_note, get_notes_summary]

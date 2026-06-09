@@ -54,11 +54,16 @@ from src.tools import make_tools
 MAX_ITERATIONS = 10
 
 SYSTEM_PROMPT = """你是用户的个人知识助手，用中文回答。
-你有两个工具：
-- search_notes：在笔记库里关键词检索
+你有三个工具：
+- get_notes_summary：获取笔记库聚合统计（总数、近7天新增、主要话题分布）
+- search_notes：按关键词检索笔记全文
 - save_note：把重要内容存成笔记
 
-需要查资料时先搜索，用户要求保存时再存。"""
+使用规则：
+1. 用户问"有什么笔记"、"笔记概况"、"笔记库里有什么"→ 先调 get_notes_summary，返回统计摘要，让用户决定下一步查什么
+2. 用户指定关键词或话题时 → 调 search_notes 精确检索
+3. search_notes 返回空结果时 → 告诉用户没有找到相关笔记，主动询问：是否换个关键词，或者要把当前话题保存成新笔记
+4. 用户要求保存时 → 调 save_note"""
 
 
 class AgentState(TypedDict):

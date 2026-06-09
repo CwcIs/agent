@@ -39,14 +39,16 @@ async def run_case(case: dict, llm) -> dict:
         msgs = [
             SystemMessage(content="""你是用户的个人知识助手，用中文回答。
 你有三个工具：
-- get_notes_summary：获取笔记库聚合统计
+- get_notes_summary：获取笔记库聚合统计（总数、近7天新增、主要话题分布）
 - search_notes：按关键词检索笔记全文
 - save_note：把重要内容存成笔记
 
 使用规则：
-1. 用户问"有什么笔记"、"笔记概况"、"笔记库里有什么"→ 调 get_notes_summary
-2. 用户指定关键词或话题时 → 调 search_notes
-3. 用户要求保存时 → 调 save_note"""),
+1. 用户问"有什么笔记"、"笔记概况"、"笔记库里有什么" → 调 get_notes_summary
+2. 用户问"有没有记过 X"、"找找 X"、"搜一下 X"、"X 相关的笔记" → 调 search_notes
+3. search_notes 返回空时 → 告知没找到，询问是否换词或保存新笔记
+4. 用户要求保存时 → 调 save_note
+5. 纯知识问答（"X 是什么"、"怎么理解 X"）→ 直接回答，不调工具"""),
             HumanMessage(content=user_input),
         ]
         response = await llm.ainvoke(msgs)

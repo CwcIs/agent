@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { ref, nextTick, onUnmounted } from "vue";
+import { ref, nextTick, onUnmounted, computed } from "vue";
+import { marked } from "marked";
+
+marked.setOptions({ breaks: true });
 
 interface Message {
   role: "user" | "assistant";
@@ -129,7 +132,8 @@ onUnmounted(() => {
           ]"
         >
           <div v-if="msg.agentId" class="text-[10px] text-gray-500 mb-1 font-mono">{{ msg.agentId }}</div>
-          <div class="whitespace-pre-wrap">{{ msg.content }}<span v-if="!msg.done && msg.role === 'assistant'" class="inline-block w-0.5 h-4 bg-gray-400 ml-0.5 animate-pulse align-text-bottom" /></div>
+          <div v-if="msg.role === 'assistant'" class="prose prose-invert prose-sm max-w-none" v-html="marked.parse(msg.content) + (!msg.done ? '<span class=\'inline-block w-0.5 h-3.5 bg-gray-400 ml-0.5 animate-pulse align-text-bottom\'></span>' : '')"></div>
+          <div v-else class="whitespace-pre-wrap">{{ msg.content }}</div>
         </div>
       </div>
     </div>

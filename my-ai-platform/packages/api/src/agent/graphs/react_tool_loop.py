@@ -77,9 +77,9 @@ def build_graph(
     tools = make_tools(conn)
     llm = make_deepseek(tools)
 
-    def call_model(state: AgentState) -> dict:
+    async def call_model(state: AgentState) -> dict:
         msgs = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
-        response = llm.invoke(msgs)
+        response = await llm.ainvoke(msgs)
         return {"messages": [response]}
 
     def should_continue(state: AgentState) -> str:

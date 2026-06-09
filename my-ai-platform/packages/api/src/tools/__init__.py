@@ -136,4 +136,96 @@ def make_tools(conn: sqlite3.Connection) -> list:
             "top_tags": tags_str,
         }, ensure_ascii=False)
 
-    return [search_notes, save_note, get_notes_summary]
+    @tool
+    def synthesize_notes(topic: str, k: int = 6) -> str:
+        """
+        跨笔记综合：找到与 topic 最相关的笔记，生成一段综合洞察。
+        适合用户问"我对 X 有哪些理解"、"总结一下我关于 X 的想法"、"X 方面我记了什么"。
+        返回 JSON：{ narrative, cited_notes, gaps }
+        - narrative: 综合分析段落
+        - cited_notes: 引用的笔记列表 [{id, title}]
+        - gaps: AI 发现的空白或矛盾点（1-2 条）
+        """
+        from src.lib.embeddings import search_similar
+        from src.agent.providers.deepseek import make_deepseek
+        import asyncio
+
+        # 向量搜索相关笔记
+        try:
+            hits = search_similar(conn, topic, k)
+            ids = [h["note_id"] for h in hits]
+        except Exception:
+            ids = []
+
+        # fallback FTS5
+        if not ids:
+            rows = conn.execute(
+                "SELECT n.id FROM notes_fts f JOIN notes n ON n.rowid = f.rowid "
+                "WHERE notes_fts MATCH ? AND n.status='live' AND n.deleted_at IS NULL LIMIT ?",
+                (topic, k),
+            ).fetchall()
+            ids = [r[0] for r in rows]
+
+        if not ids:
+            return json.dumps({
+                "narrative": f"笔记库里还没有关于「{topic}」的内容。",
+                "cited_notes": [],
+                "gaps": [f"可以开始记录关于「{topic}」的想法"],
+            }, ensure_ascii=False)
+
+        placeholders = ",".join("?" * len(ids))
+        notes = conn.execute(
+            f"SELECT id, title, content FROM notes WHERE id IN ({placeholders}) "
+            f"AND status='live' AND deleted_at IS NULL",
+            ids,
+        ).fetchall()
+
+        notes_text = "\n\n".join(
+            f"[{i+1}] 标题：{dict(n)['title']}\n内容：{dict(n)['content'][:400]}"
+            for i, n in enumerate(notes)
+        )
+
+        prompt = f"""用户想了解自己关于「{topic}」的思考。以下是相关笔记：
+
+{notes_text}
+
+请生成：
+1. 一段综合分析（自然段落，150字以内，指出共同主题、有趣联系）
+2. 1-2 个空白或矛盾点（用户可能没想清楚的地方）
+
+以 JSON 返回：
+{{"narrative": "综合分析", "gaps": ["空白点1", "空白点2"]}}
+
+只返回 JSON。"""
+
+        llm = make_deepseek()
+
+        async def _call():
+            from langchain_core.messages import HumanMessage
+            resp = await llm.ainvoke([HumanMessage(content=prompt)])
+            return resp.content
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, _call())
+                    text = future.result(timeout=30)
+            else:
+                text = loop.run_until_complete(_call())
+
+            text = text.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+            parsed = json.loads(text)
+        except Exception as e:
+            parsed = {"narrative": f"综合分析生成失败：{e}", "gaps": []}
+
+        return json.dumps({
+            "narrative": parsed.get("narrative", ""),
+            "cited_notes": [{"id": dict(n)["id"], "title": dict(n)["title"]} for n in notes],
+            "gaps": parsed.get("gaps", []),
+        }, ensure_ascii=False)
+
+    return [search_notes, save_note, get_notes_summary, synthesize_notes]

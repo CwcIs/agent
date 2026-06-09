@@ -147,6 +147,34 @@ def create_note(body: NoteIn, conn: sqlite3.Connection = Depends(get_conn)):
     return json.loads(result)
 
 
+# ── DELETE /notes/{id} ────────────────────────────────────
+@router.delete("/notes/{note_id}", status_code=200)
+def delete_note(note_id: str, conn: sqlite3.Connection = Depends(get_conn)):
+    row = conn.execute("SELECT id FROM notes WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "note not found")
+    conn.execute("UPDATE notes SET deleted_at = datetime('now','localtime') WHERE id = ?", (note_id,))
+    conn.commit()
+    return {"status": "deleted", "id": note_id}
+
+
+# ── PATCH /notes/{id} ─────────────────────────────────────
+class NotePatch(BaseModel):
+    status: str  # archived | live
+
+
+@router.patch("/notes/{note_id}", status_code=200)
+def patch_note(note_id: str, body: NotePatch, conn: sqlite3.Connection = Depends(get_conn)):
+    if body.status not in ("archived", "live"):
+        raise HTTPException(400, "status must be archived or live")
+    row = conn.execute("SELECT id FROM notes WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "note not found")
+    conn.execute("UPDATE notes SET status = ? WHERE id = ?", (body.status, note_id))
+    conn.commit()
+    return {"status": body.status, "id": note_id}
+
+
 # ── GET /digest ───────────────────────────────────────────
 @router.get("/digest")
 async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):

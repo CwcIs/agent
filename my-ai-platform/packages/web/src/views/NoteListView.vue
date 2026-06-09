@@ -6,11 +6,12 @@ interface Note {
   title: string;
   tags: string[];
   status: string;
-  createdAt: string;
+  created_at: string;
 }
 
 const notes = ref<Note[]>([]);
-const filter = ref<"live" | "superseded" | "archived" | "all">("live");
+const filter = ref<"live" | "archived" | "all">("live");
+const loading = ref(false);
 
 const filtered = computed(() =>
   filter.value === "all" ? notes.value : notes.value.filter((n) => n.status === filter.value)
@@ -18,12 +19,11 @@ const filtered = computed(() =>
 
 const statusLabels: Record<string, string> = {
   live: "有效",
-  superseded: "已覆盖",
   archived: "归档",
   all: "全部",
 };
 
-onMounted(async () => {
+async function fetchNotes() {
   try {
     const resp = await fetch("/notes");
     const data = await resp.json();
@@ -31,11 +31,29 @@ onMounted(async () => {
   } catch {
     notes.value = [];
   }
-});
+}
+
+onMounted(fetchNotes);
 
 function formatDate(s: string) {
   const d = new Date(s);
   return isNaN(d.getTime()) ? s : `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+async function archiveNote(note: Note) {
+  const newStatus = note.status === "archived" ? "live" : "archived";
+  await fetch(`/notes/${note.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status: newStatus }),
+  });
+  note.status = newStatus;
+}
+
+async function deleteNote(note: Note) {
+  if (!confirm(`删除「${note.title}」？`)) return;
+  await fetch(`/notes/${note.id}`, { method: "DELETE" });
+  notes.value = notes.value.filter((n) => n.id !== note.id);
 }
 </script>
 
@@ -44,13 +62,11 @@ function formatDate(s: string) {
     <!-- 过滤标签 -->
     <div class="flex gap-1 px-3 pt-3 pb-2">
       <button
-        v-for="s in (['live', 'all'] as const)"
+        v-for="s in (['live', 'archived', 'all'] as const)"
         :key="s"
         :class="[
           'px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors',
-          filter === s
-            ? 'bg-white/10 text-gray-200'
-            : 'text-gray-600 hover:text-gray-400'
+          filter === s ? 'bg-white/10 text-gray-200' : 'text-gray-600 hover:text-gray-400'
         ]"
         @click="filter = s"
       >
@@ -63,13 +79,41 @@ function formatDate(s: string) {
       <li
         v-for="note in filtered"
         :key="note.id"
-        class="group px-3 py-2.5 rounded-lg cursor-pointer hover:bg-white/[0.04] transition-colors"
-        :class="{ 'opacity-40': note.status !== 'live' }"
+        class="group px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors"
+        :class="{ 'opacity-40': note.status === 'archived' }"
       >
-        <div class="flex items-start justify-between gap-2">
-          <span class="text-sm text-gray-300 truncate leading-snug">{{ note.title }}</span>
-          <span class="text-[10px] text-gray-700 shrink-0 mt-0.5">{{ formatDate(note.createdAt) }}</span>
+        <div class="flex items-start justify-between gap-1">
+          <span class="text-sm text-gray-300 truncate leading-snug flex-1">{{ note.title }}</span>
+
+          <!-- 操作按钮 hover 才显示 -->
+          <div class="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+            <!-- 归档 / 取消归档 -->
+            <button
+              class="p-1 rounded hover:bg-white/10 transition-colors"
+              :title="note.status === 'archived' ? '取消归档' : '归档'"
+              @click.stop="archiveNote(note)"
+            >
+              <svg class="w-3 h-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8l1 12a2 2 0 002 2h8a2 2 0 002-2L19 8" />
+              </svg>
+            </button>
+            <!-- 删除 -->
+            <button
+              class="p-1 rounded hover:bg-red-500/20 transition-colors"
+              title="删除"
+              @click.stop="deleteNote(note)"
+            >
+              <svg class="w-3 h-3 text-gray-500 hover:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
+          </div>
+
+          <span class="text-[10px] text-gray-700 shrink-0 mt-0.5 group-hover:hidden">{{ formatDate(note.created_at) }}</span>
         </div>
+
         <div v-if="note.tags?.length" class="flex gap-1 mt-1.5 flex-wrap">
           <span
             v-for="tag in note.tags"

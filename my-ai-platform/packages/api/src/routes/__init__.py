@@ -154,10 +154,16 @@ async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
 
     # 命中缓存直接返回
     cached = conn.execute(
-        "SELECT payload_json FROM daily_digests WHERE date = ?", (today,)
+        "SELECT note_count, narrative, follow_ups, cited_notes FROM daily_digests WHERE date = ?", (today,)
     ).fetchone()
     if cached:
-        return json.loads(cached[0])
+        return {
+            "date": today,
+            "noteCount": cached[0],
+            "narrative": cached[1],
+            "followUps": json.loads(cached[2]),
+            "citedNotes": json.loads(cached[3]),
+        }
 
     # 取最近 7 天的 live 笔记（没有"昨天"限制，否则新用户永远没数据）
     since = (date.today() - timedelta(days=7)).isoformat()
@@ -230,7 +236,15 @@ async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
 
 def _cache_digest(conn: sqlite3.Connection, today: str, payload: dict) -> None:
     conn.execute(
-        "INSERT OR REPLACE INTO daily_digests (date, payload_json) VALUES (?, ?)",
-        (today, json.dumps(payload, ensure_ascii=False)),
+        "INSERT OR REPLACE INTO daily_digests (id, date, note_count, narrative, follow_ups, cited_notes) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            str(uuid.uuid4()),
+            today,
+            payload.get("noteCount", 0),
+            payload.get("narrative", ""),
+            json.dumps(payload.get("followUps", []), ensure_ascii=False),
+            json.dumps(payload.get("citedNotes", []), ensure_ascii=False),
+        ),
     )
     conn.commit()

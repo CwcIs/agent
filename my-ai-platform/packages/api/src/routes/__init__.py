@@ -58,11 +58,16 @@ def get_conn():
 # ── GET /chat/stream ──────────────────────────────────────
 @router.get("/chat/stream")
 async def chat_stream(
-    q: str = "你好",
+    input: str = "",
     session_id: str = "",
     prompt_version: str = "v1",
     graph=Depends(get_graph),
 ):
+    if not input:
+        async def empty_gen():
+            yield {"event": "error", "data": "input is required"}
+        return EventSourceResponse(empty_gen())
+
     sid = session_id or str(uuid.uuid4())
     config = {
         "configurable": {"thread_id": sid},
@@ -72,7 +77,7 @@ async def chat_stream(
     async def event_generator():
         try:
             async for event in graph.astream_events(
-                {"messages": [HumanMessage(content=q)]},
+                {"messages": [HumanMessage(content=input)]},
                 config=config,
                 version="v2",
             ):
@@ -122,7 +127,7 @@ def list_notes(conn: sqlite3.Connection = Depends(get_conn)):
         d = dict(r)
         d["tags"] = json.loads(d.pop("tags_json", "[]"))
         result.append(d)
-    return result
+    return {"notes": result}
 
 
 # ── POST /notes ───────────────────────────────────────────

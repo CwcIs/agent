@@ -24,9 +24,10 @@
 import json
 import sqlite3
 import uuid
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -144,3 +145,92 @@ def create_note(body: NoteIn, conn: sqlite3.Connection = Depends(get_conn)):
     save = next(t for t in tools if t.name == "save_note")
     result = save.invoke({"title": body.title, "content": body.content, "tags": body.tags})
     return json.loads(result)
+
+
+# ── GET /digest ───────────────────────────────────────────
+@router.get("/digest")
+async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
+    today = date.today().isoformat()
+
+    # 命中缓存直接返回
+    cached = conn.execute(
+        "SELECT payload_json FROM daily_digests WHERE date = ?", (today,)
+    ).fetchone()
+    if cached:
+        return json.loads(cached[0])
+
+    # 取最近 7 天的 live 笔记（没有"昨天"限制，否则新用户永远没数据）
+    since = (date.today() - timedelta(days=7)).isoformat()
+    rows = conn.execute(
+        "SELECT id, title, content, tags_json, created_at FROM notes "
+        "WHERE status='live' AND deleted_at IS NULL AND date(created_at) >= ? "
+        "ORDER BY created_at DESC LIMIT 20",
+        (since,),
+    ).fetchall()
+
+    note_count = len(rows)
+
+    # 没有笔记时返回温和提示，不调 LLM
+    if note_count == 0:
+        result = {
+            "date": today,
+            "noteCount": 0,
+            "narrative": "最近还没有笔记，去 Chat 里写第一条吧。",
+            "followUps": ["我想开始记录今天的想法", "帮我新建一条笔记", "笔记库能存什么内容？"],
+            "citedNotes": [],
+        }
+        _cache_digest(conn, today, result)
+        return result
+
+    # 组装笔记摘要给 LLM
+    notes_text = "\n\n".join(
+        f"[{i+1}] id={dict(r)['id']}\n标题：{dict(r)['title']}\n内容：{dict(r)['content'][:300]}"
+        for i, r in enumerate(rows)
+    )
+
+    prompt = f"""以下是用户最近7天的 {note_count} 条笔记：
+
+{notes_text}
+
+请生成一段连贯的中文综述（不要用 bullet 列表，写成自然段落，150字以内），以及恰好3条值得追问的问题。
+
+以 JSON 格式返回，结构如下：
+{{
+  "narrative": "综述文字",
+  "followUps": ["追问1", "追问2", "追问3"],
+  "citedNotes": [{{"noteId": "id", "title": "标题"}}]
+}}
+
+只返回 JSON，不要其他文字。"""
+
+    from src.agent.providers.deepseek import make_deepseek
+    llm = make_deepseek()
+    response = await llm.ainvoke([SystemMessage(content="你是用户的个人知识助手，用中文回答。"), HumanMessage(content=prompt)])
+
+    try:
+        text = response.content.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        parsed = json.loads(text)
+    except Exception:
+        parsed = {
+            "narrative": response.content[:200],
+            "followUps": [],
+            "citedNotes": [],
+        }
+
+    result = {
+        "date": today,
+        "noteCount": note_count,
+        **parsed,
+    }
+    _cache_digest(conn, today, result)
+    return result
+
+
+def _cache_digest(conn: sqlite3.Connection, today: str, payload: dict) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO daily_digests (date, payload_json) VALUES (?, ?)",
+        (today, json.dumps(payload, ensure_ascii=False)),
+    )
+    conn.commit()

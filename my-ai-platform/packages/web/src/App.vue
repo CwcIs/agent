@@ -5,6 +5,11 @@ import NoteListView from "./views/NoteListView.vue";
 import DailyDigestPanel from "./views/DailyDigestPanel.vue";
 
 const sidebarOpen = ref(true);
+const chatRef = ref<InstanceType<typeof ChatView> | null>(null);
+
+function handleFollowUp(q: string) {
+  chatRef.value?.sendWithText(q);
+}
 </script>
 
 <template>
@@ -49,10 +54,10 @@ const sidebarOpen = ref(true);
       </header>
 
       <!-- 每日回顾 -->
-      <DailyDigestPanel />
+      <DailyDigestPanel @follow-up="handleFollowUp" />
 
       <!-- Chat -->
-      <ChatView />
+      <ChatView ref="chatRef" />
     </main>
   </div>
 </template>

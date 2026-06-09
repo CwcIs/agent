@@ -86,6 +86,14 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+function sendWithText(text: string) {
+  if (streaming.value) return;
+  input.value = text;
+  sendMessage();
+}
+
+defineExpose({ sendWithText });
+
 onUnmounted(() => {
   eventSource?.close();
 });

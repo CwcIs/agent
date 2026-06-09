@@ -5,11 +5,9 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     proxy: {
-      '/api': 'http://localhost:3000',
-      '/chat/stream': {
-        target: 'http://localhost:3000',
-        ws: true,
-      },
+      '/chat': 'http://localhost:8000',
+      '/notes': 'http://localhost:8000',
+      '/digest': 'http://localhost:8000',
     },
   },
 })

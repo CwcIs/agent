@@ -35,23 +35,23 @@ function sendMessage() {
   eventSource = new EventSource(`/chat/stream?input=${encoded}`);
 
   eventSource.addEventListener("token", (e) => {
-    const last = messages.value[messages.value.length - 1];
-    if (last?.role === "assistant" && !last.done) {
-      last.content += e.data;
-    } else {
-      messages.value.push({ role: "assistant", content: e.data, done: false });
-    }
-    scrollBottom();
-  });
-
-  eventSource.addEventListener("text", (e) => {
     const data = JSON.parse(e.data);
     const last = messages.value[messages.value.length - 1];
-    if (last?.role === "assistant" && !last.done) {
+    if (last?.role === "assistant" && !last.done && last.agentId === data.agentId) {
       last.content += data.delta;
     } else {
       messages.value.push({ role: "assistant", content: data.delta, agentId: data.agentId, done: false });
     }
+    scrollBottom();
+  });
+
+  eventSource.addEventListener("agent_switch", (e) => {
+    const data = JSON.parse(e.data);
+    // 关闭上一条消息，下一个 token 会开新气泡
+    const last = messages.value[messages.value.length - 1];
+    if (last?.role === "assistant" && !last.done) last.done = true;
+    // 插入切换提示气泡
+    messages.value.push({ role: "assistant", content: "", agentId: data.agentId, done: false });
     scrollBottom();
   });
 
@@ -124,10 +124,14 @@ onUnmounted(() => {
         <div
           :class="[
             'w-7 h-7 rounded-lg shrink-0 flex items-center justify-center text-xs font-semibold mt-0.5',
-            msg.role === 'user' ? 'bg-indigo-500/20 text-indigo-400' : 'bg-white/5 text-gray-400'
+            msg.role === 'user'
+              ? 'bg-indigo-500/20 text-indigo-400'
+              : msg.agentId === 'review'
+                ? 'bg-amber-500/20 text-amber-400'
+                : 'bg-emerald-500/20 text-emerald-400'
           ]"
         >
-          {{ msg.role === 'user' ? 'U' : 'AI' }}
+          {{ msg.role === 'user' ? 'U' : (msg.agentId === 'review' ? 'R' : 'K') }}
         </div>
 
         <!-- 气泡 -->
@@ -139,7 +143,13 @@ onUnmounted(() => {
               : 'bg-white/[0.06] text-gray-200 rounded-tl-sm border border-white/[0.06]'
           ]"
         >
-          <div v-if="msg.agentId" class="text-[10px] text-gray-500 mb-1 font-mono">{{ msg.agentId }}</div>
+          <div
+            v-if="msg.agentId"
+            :class="[
+              'text-[10px] mb-1 font-mono',
+              msg.agentId === 'review' ? 'text-amber-500' : 'text-emerald-600'
+            ]"
+          >{{ msg.agentId }}</div>
           <div v-if="msg.role === 'assistant'" class="prose prose-invert prose-sm max-w-none" v-html="marked.parse(msg.content) + (!msg.done ? '<span class=\'inline-block w-0.5 h-3.5 bg-gray-400 ml-0.5 animate-pulse align-text-bottom\'></span>' : '')"></div>
           <div v-else class="whitespace-pre-wrap">{{ msg.content }}</div>
         </div>

@@ -33,21 +33,12 @@ from sse_starlette.sse import EventSourceResponse
 
 router = APIRouter()
 
-# graph 和 conn 由 main.py lifespan 注入，路由通过依赖获取
-_graph = None
 _conn: sqlite3.Connection | None = None
 
 
-def set_globals(graph, conn: sqlite3.Connection) -> None:
-    global _graph, _conn
-    _graph = graph
+def set_globals(conn: sqlite3.Connection) -> None:
+    global _conn
     _conn = conn
-
-
-def get_graph():
-    if _graph is None:
-        raise HTTPException(500, "graph not initialized")
-    return _graph
 
 
 def get_conn():
@@ -62,7 +53,6 @@ async def chat_stream(
     input: str = "",
     session_id: str = "",
     prompt_version: str = "v1",
-    graph=Depends(get_graph),
 ):
     if not input:
         async def empty_gen():
@@ -70,45 +60,59 @@ async def chat_stream(
         return EventSourceResponse(empty_gen())
 
     sid = session_id or str(uuid.uuid4())
-    config = {
-        "configurable": {"thread_id": sid},
-        "recursion_limit": 10,
-    }
 
     async def event_generator():
+        from src.agent.router import route_serial
         try:
-            async for event in graph.astream_events(
-                {"messages": [HumanMessage(content=input)]},
-                config=config,
-                version="v2",
-            ):
-                kind = event["event"]
+            async for event in route_serial(input, sid):
+                etype = event.get("type")
 
-                if kind == "on_chat_model_stream":
-                    chunk = event["data"]["chunk"]
-                    if chunk.content:
-                        yield {"event": "token", "data": chunk.content}
+                if etype == "token":
+                    yield {
+                        "event": "token",
+                        "data": json.dumps(
+                            {"delta": event["delta"], "agentId": event["agentId"]},
+                            ensure_ascii=False,
+                        ),
+                    }
 
-                elif kind == "on_tool_start":
+                elif etype == "tool_start":
                     yield {
                         "event": "tool_start",
                         "data": json.dumps(
-                            {"name": event["name"], "input": event["data"].get("input", {})},
+                            {
+                                "name": event["name"],
+                                "input": event.get("input", {}),
+                                "agentId": event["agentId"],
+                            },
                             ensure_ascii=False,
                         ),
                     }
 
-                elif kind == "on_tool_end":
-                    output = event["data"].get("output", "")
+                elif etype == "tool_end":
                     yield {
                         "event": "tool_end",
                         "data": json.dumps(
-                            {"name": event["name"], "result": str(output)[:300]},
+                            {
+                                "name": event["name"],
+                                "result": event.get("result", ""),
+                                "agentId": event["agentId"],
+                            },
                             ensure_ascii=False,
                         ),
                     }
 
-            yield {"event": "done", "data": json.dumps({"session_id": sid})}
+                elif etype == "agent_switch":
+                    yield {
+                        "event": "agent_switch",
+                        "data": json.dumps({"agentId": event["agentId"]}, ensure_ascii=False),
+                    }
+
+                elif etype == "done":
+                    yield {"event": "done", "data": json.dumps({"session_id": sid})}
+
+                elif etype == "error":
+                    yield {"event": "error", "data": event.get("message", "unknown error")}
 
         except Exception as exc:
             yield {"event": "error", "data": str(exc)}

@@ -46,16 +46,15 @@ init_db(_conn)
 CHECKPOINT_DB = Path(__file__).parent.parent / "data" / "checkpoint.db"
 
 # ── 3+4. lifespan：启动 AsyncSqliteSaver + 构建 LangGraph 图 ──
-from src.agent.graphs.react_tool_loop import build_graph
+from src.agent.registry import init_registry
 from src.routes import router, set_globals
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     CHECKPOINT_DB.parent.mkdir(parents=True, exist_ok=True)
-    async with AsyncSqliteSaver.from_conn_string(str(CHECKPOINT_DB)) as checkpointer:
-        graph = build_graph(_conn, checkpointer)
-        set_globals(graph, _conn)
-        yield
+    init_registry(_conn)
+    set_globals(_conn)
+    yield
     _conn.close()
 
 # ── 5. FastAPI 应用 ───────────────────────────────────────

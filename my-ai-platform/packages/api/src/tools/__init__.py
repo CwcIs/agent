@@ -206,14 +206,18 @@ def make_tools(conn: sqlite3.Connection) -> list:
             return resp.content
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(asyncio.run, _call())
-                    text = future.result(timeout=30)
-            else:
-                text = loop.run_until_complete(_call())
+            import concurrent.futures
+            import threading
+
+            result_holder = {}
+
+            def _run():
+                result_holder["text"] = asyncio.run(_call())
+
+            t = threading.Thread(target=_run)
+            t.start()
+            t.join(timeout=30)
+            text = result_holder.get("text", "")
 
             text = text.strip()
             if text.startswith("```"):
@@ -240,14 +244,16 @@ def make_tools(conn: sqlite3.Connection) -> list:
         from src.agent.graphs.review_agent import run_review
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(asyncio.run, run_review(content))
-                    result = future.result(timeout=30)
-            else:
-                result = loop.run_until_complete(run_review(content))
+            import threading
+            result_holder = {}
+
+            def _run():
+                result_holder["text"] = asyncio.run(run_review(content))
+
+            t = threading.Thread(target=_run)
+            t.start()
+            t.join(timeout=30)
+            result = result_holder.get("text", "Review 超时")
         except Exception as e:
             result = f"Review 生成失败：{e}"
 

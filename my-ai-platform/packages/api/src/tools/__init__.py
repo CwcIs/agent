@@ -232,31 +232,4 @@ def make_tools(conn: sqlite3.Connection) -> list:
             "gaps": parsed.get("gaps", []),
         }, ensure_ascii=False)
 
-    @tool
-    def request_review(content: str) -> str:
-        """
-        对一段观点或论断发起思维挑战（Review Agent）。
-        适合用户说"帮我 review 这个想法"、"挑战一下"、"帮我找漏洞"、"这个观点有问题吗"。
-        Review Agent 会从逻辑漏洞、遗漏假设、反例三个角度挑战，并给出追问。
-        返回 Review Agent 的挑战文本。
-        """
-        import asyncio
-        from src.agent.graphs.review_agent import run_review
-
-        try:
-            import threading
-            result_holder = {}
-
-            def _run():
-                result_holder["text"] = asyncio.run(run_review(content))
-
-            t = threading.Thread(target=_run)
-            t.start()
-            t.join(timeout=30)
-            result = result_holder.get("text", "Review 超时")
-        except Exception as e:
-            result = f"Review 生成失败：{e}"
-
-        return result
-
-    return [search_notes, save_note, get_notes_summary, synthesize_notes, request_review]
+    return [search_notes, save_note, get_notes_summary, synthesize_notes]

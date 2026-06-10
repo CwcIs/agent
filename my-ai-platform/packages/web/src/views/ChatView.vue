@@ -2,6 +2,24 @@
 import { ref, nextTick, onUnmounted, computed } from "vue";
 import { marked } from "marked";
 
+const TAG_AGENT_MAP: Record<string, string> = {
+  review: "review",
+  critique: "review",
+};
+
+const TAG_LABEL: Record<string, string> = {
+  review: "Review Agent",
+  critique: "Review Agent",
+};
+
+function parseTag(text: string): { tag: string; label: string } | null {
+  const m = text.match(/#([a-zA-Z][a-zA-Z0-9_-]*)/);
+  if (!m) return null;
+  const tag = m[1].toLowerCase();
+  if (tag in TAG_AGENT_MAP) return { tag, label: TAG_LABEL[tag] };
+  return null;
+}
+
 marked.setOptions({ breaks: true });
 
 interface Message {
@@ -14,6 +32,7 @@ interface Message {
 const messages = ref<Message[]>([]);
 const input = ref("");
 const streaming = ref(false);
+const activeTag = computed(() => parseTag(input.value));
 const messagesEl = ref<HTMLElement | null>(null);
 let eventSource: EventSource | null = null;
 
@@ -158,11 +177,18 @@ onUnmounted(() => {
 
     <!-- 输入区 -->
     <div class="px-4 pb-4 shrink-0">
-      <div class="flex items-end gap-2 bg-white/[0.04] border border-white/[0.08] rounded-2xl p-2 focus-within:border-white/20 transition-colors">
+      <!-- tag pill -->
+      <div v-if="activeTag" class="mb-1.5 flex items-center gap-1.5 px-1">
+        <span class="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/20">
+          <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+          → {{ activeTag.label }}
+        </span>
+      </div>
+      <div class="flex items-end gap-2 bg-white/[0.04] border border-white/[0.08] rounded-2xl p-2 focus-within:border-white/20 transition-colors" :class="activeTag ? 'border-amber-500/20' : ''">
         <textarea
           v-model="input"
           class="flex-1 bg-transparent text-sm text-gray-200 placeholder-gray-600 resize-none outline-none leading-relaxed min-h-[40px] max-h-32 px-2 py-1.5"
-          placeholder="输入碎片想法..."
+          :placeholder="activeTag ? `#${activeTag.tag} 已激活，直接输入内容...` : '输入碎片想法，或用 #review 触发 Review Agent'"
           rows="1"
           @keydown="handleKeydown"
           @input="($event.target as HTMLTextAreaElement).style.height = 'auto'; ($event.target as HTMLTextAreaElement).style.height = ($event.target as HTMLTextAreaElement).scrollHeight + 'px'"

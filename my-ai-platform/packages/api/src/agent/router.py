@@ -28,6 +28,28 @@ _MENTION_RE = re.compile(
     re.MULTILINE,
 )
 
+# 匹配用户输入中的 #tag，例：#review
+_TAG_RE = re.compile(r"#([a-zA-Z][a-zA-Z0-9_-]*)", re.IGNORECASE)
+
+# 已知的 hashtag → agent_id 映射（Clowder 风格显式路由）
+_TAG_AGENT_MAP = {
+    "review": "review",
+    "critique": "review",
+}
+
+
+def parse_user_tags(text: str) -> tuple[str | None, str]:
+    """
+    解析用户输入中的 #tag，返回 (agent_id, stripped_text)。
+    只取第一个命中的 tag。未命中返回 (None, original_text)。
+    """
+    for m in _TAG_RE.finditer(text):
+        tag = m.group(1).lower()
+        if tag in _TAG_AGENT_MAP:
+            stripped = _TAG_RE.sub("", text).strip()
+            return _TAG_AGENT_MAP[tag], stripped
+    return None, text
+
 
 def parse_a2a_mentions(text: str, current_agent_id: str) -> list[tuple[str, str]]:
     """
@@ -72,7 +94,10 @@ async def route_serial(
 
     产出带 agentId 的事件，与 BaseAgent.astream 相同格式。
     """
-    queue: list[tuple[str, str]] = [("knowledge", user_input)]
+    # 用户显式 #tag 路由（Clowder 风格）
+    tag_agent, cleaned_input = parse_user_tags(user_input)
+    start_agent = tag_agent or "knowledge"
+    queue: list[tuple[str, str]] = [(start_agent, cleaned_input)]
     depth = 0
 
     while queue and depth < MAX_A2A_DEPTH:

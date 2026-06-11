@@ -29,6 +29,17 @@ interface Message {
   done?: boolean;
 }
 
+const SESSION_KEY = "chat_session_id";
+function getOrCreateSessionId(): string {
+  let sid = sessionStorage.getItem(SESSION_KEY);
+  if (!sid) {
+    sid = crypto.randomUUID();
+    sessionStorage.setItem(SESSION_KEY, sid);
+  }
+  return sid;
+}
+const sessionId = getOrCreateSessionId();
+
 const messages = ref<Message[]>([]);
 const input = ref("");
 const streaming = ref(false);
@@ -51,7 +62,7 @@ function sendMessage() {
   scrollBottom();
 
   const encoded = encodeURIComponent(input.value);
-  eventSource = new EventSource(`/chat/stream?input=${encoded}`);
+  eventSource = new EventSource(`/chat/stream?input=${encoded}&session_id=${sessionId}`);
 
   eventSource.addEventListener("token", (e) => {
     const data = JSON.parse(e.data);

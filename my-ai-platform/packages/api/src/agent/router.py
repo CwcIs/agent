@@ -12,11 +12,38 @@ A2A Router — prompt-chained Agent 调度器。
 """
 
 import re
+import sqlite3
+import uuid
 from typing import AsyncGenerator
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from src.agent.registry import get_agent, get_default_agent, list_agent_ids
+
+_HISTORY_LIMIT = 20  # 每个 session 最多取最近 N 条消息
+
+
+def _load_history(conn: sqlite3.Connection, session_id: str) -> list:
+    rows = conn.execute(
+        "SELECT role, content FROM messages "
+        "WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+        (session_id, _HISTORY_LIMIT),
+    ).fetchall()
+    msgs = []
+    for role, content in reversed(rows):
+        if role == "user":
+            msgs.append(HumanMessage(content=content))
+        elif role == "assistant":
+            msgs.append(AIMessage(content=content))
+    return msgs
+
+
+def _save_message(conn: sqlite3.Connection, session_id: str, agent_id: str, role: str, content: str) -> None:
+    conn.execute(
+        "INSERT INTO messages (id, session_id, agent_id, role, content) VALUES (?, ?, ?, ?, ?)",
+        (str(uuid.uuid4()), session_id, agent_id, role, content),
+    )
+    conn.commit()
 
 MAX_A2A_DEPTH = 5
 MAX_MENTION_TARGETS = 2
@@ -84,6 +111,7 @@ def parse_a2a_mentions(text: str, current_agent_id: str) -> list[tuple[str, str]
 async def route_serial(
     user_input: str,
     session_id: str,
+    conn: sqlite3.Connection | None = None,
 ) -> AsyncGenerator[dict, None]:
     """
     主路由循环：
@@ -97,11 +125,20 @@ async def route_serial(
     # 用户显式 #tag 路由（Clowder 风格）
     tag_agent, cleaned_input = parse_user_tags(user_input)
     start_agent = tag_agent or "knowledge"
-    queue: list[tuple[str, str]] = [(start_agent, cleaned_input)]
+
+    # 持久化用户消息
+    if conn:
+        _save_message(conn, session_id, "user", "user", user_input)
+
+    # 第一跳：历史 + 当前用户消息
+    history = _load_history(conn, session_id)[:-1] if conn else []  # 去掉刚存的那条，避免重复
+    first_messages = history + [HumanMessage(content=cleaned_input)]
+
+    queue: list[tuple[str, list]] = [(start_agent, first_messages)]
     depth = 0
 
     while queue and depth < MAX_A2A_DEPTH:
-        agent_id, content = queue.pop(0)
+        agent_id, messages = queue.pop(0)
         agent = get_agent(agent_id)
 
         if agent is None:
@@ -122,14 +159,19 @@ async def route_serial(
         }
 
         full_text = ""
-        async for event in agent.astream([HumanMessage(content=content)], config):
+        async for event in agent.astream(messages, config):
             if event["type"] == "token":
                 full_text += event["delta"]
             yield event  # 透传给 SSE
 
-        # 解析下一跳
+        # 持久化 assistant 回复
+        if conn and full_text:
+            _save_message(conn, session_id, agent_id, "assistant", full_text)
+
+        # 解析下一跳（A2A：只传这条 assistant 回复作为新消息）
         mentions = parse_a2a_mentions(full_text, agent_id)
-        queue.extend(mentions)
+        for next_agent_id, mention_content in mentions:
+            queue.append((next_agent_id, [HumanMessage(content=mention_content or full_text)]))
         depth += 1
 
     yield {"type": "done", "session_id": session_id}

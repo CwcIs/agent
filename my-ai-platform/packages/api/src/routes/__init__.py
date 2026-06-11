@@ -64,7 +64,7 @@ async def chat_stream(
     async def event_generator():
         from src.agent.router import route_serial
         try:
-            async for event in route_serial(input, sid):
+            async for event in route_serial(input, sid, conn=_conn):
                 etype = event.get("type")
 
                 if etype == "token":

@@ -12,15 +12,21 @@
 
 **关键认知**：第二个不是"Agent 自主路由"，是 prompt 里教模型写 `@x` + 外部 30 行正则代码。
 
-## 当前状态：Phase 1（4-6 周，进行中）
+## 当前状态：Phase 1 ✅ → Phase 2（进行中）
 
-**Phase 1 范围**（[MD §8](MY-AI-PLATFORM_1.md)）：
-- ✅ 单 Agent（Claude）
-- ✅ ReAct tool loop（searchNotes / saveNote）
-- ✅ 场景 A（碎片→结构化笔记）+ 场景 D（每日 AI 回顾）
-- ✅ 硬编码流程（不上 YAML 工作流引擎）
-- ✅ 工程基础：成本上限 / prompt 版本 / 统一重试 / .env 校验 / 黄金集 evals
-- ❌ 不做：A2A handoff、第二/三个模型、向量检索、YAML 工作流
+**Phase 1**（2026-06-02 ~ 06-09）— [retro](my-ai-platform/docs/retro/phase1-retro.md) ✅ 全部验收通过
+
+**Phase 2 范围**（进行中，已有突破）：
+- ✅ 向量检索：sqlite-vec + sentence-transformers（`d94a0a2`）
+- ✅ A2A 架构：Agent 注册表 + 路由循环 + `@agent` mention（`ad6df62`）
+- ✅ ReviewAgent：prompt-chained thought challenger（`a4259bb`）
+- ✅ 笔记编辑/删除/归档：DELETE + PATCH `/notes/:id`（`24253b8`）
+- ✅ 跨笔记合成：`synthesize_notes` 工具（`0cdeb09`）
+- ✅ `#hashtag` 显式路由：`#review` 直接触发 ReviewAgent（`a3a768b`）
+- ✅ Session 持久化：sessionStorage + history reload（`65eda7f`, `3712204`）
+- ❌ context-transport：仍然全量塞历史 / 硬截断（当前最大技术债）
+- ❌ 第二/三个模型按场景分流：DeepSeek/GPT/Gemini provider 已建，缺路由逻辑
+- ❌ verdict-detect：链路终止判定，靠 `recursion_limit=10` 兜底
 
 **技术栈**（[MD §5](MY-AI-PLATFORM_1.md)）：
 - 后端：Python + FastAPI + LangGraph
@@ -36,26 +42,31 @@ my-ai-platform/
 ├── packages/
 │   ├── api/          — FastAPI + LangGraph 后端
 │   │   └── src/
-│   │       ├── agent/        — graphs/ + providers/ + states/
+│   │       ├── agent/        — 核心：registry / router / base
+│   │       │   ├── agents/   — knowledge_agent / review_agent
+│   │       │   ├── graphs/   — react_tool_loop / a2a_orchestration / daily_digest / capture_note / idea_collision
+│   │       │   ├── providers/— deepseek / gpt / gemini
+│   │       │   └── states/   — AgentState 类型定义
 │   │       ├── context/      — assemble.py（三层记忆组装）
-│   │       ├── db/           — schema.py（6 张表）
-│   │       ├── lib/          — llm_call.py / budget.py
-│   │       ├── tools/        — searchNotes / saveNote
+│   │       ├── db/           — schema.py（7 张表 + FTS5 + sqlite-vec）
+│   │       ├── lib/          — llm_call.py / budget.py / embeddings.py
+│   │       ├── tools/        — searchNotes / saveNote / synthesizeNotes / archiveNote / getNotesSummary
 │   │       ├── routes/       — SSE + REST
 │   │       ├── cli.py
 │   │       └── main.py       — 应用入口
 │   └── web/          — Vue 3 前端
-├── prompts/          — claude.system.md / gpt.system.md / gemini.system.md
+├── prompts/          — knowledge.system.md / review.system.md
 ├── evals/            — golden.jsonl + run.py
 ├── docs/             — setup/ + retro/
+├── playground/       — 学习材料（01-05 流式/ReAct 逐步理解）
 └── scripts/          — seed-notes.py
 ```
 
-**Phase 1 验收标准**（[MD §8.8](MY-AI-PLATFORM_1.md)）：
-1. 场景 A + D 连续用 7 天没崩
-2. 黄金集通过率 ≥ 80%，JSON 解析失败率 < 5%
-3. 至少一次完整 2 跳 ReAct loop 日志可复现
-4. phase1-retro.md 写完
+**Phase 1 验收**（[retro](my-ai-platform/docs/retro/phase1-retro.md)，2026-06-09）：
+1. ✅ 场景 A + D 端到端跑通，Vue 3 SSE 流式渲染正常
+2. ✅ 黄金集 10/10（100%），JSON 解析失败率 0%
+3. ✅ 2 跳 ReAct loop 日志可复现
+4. ✅ phase1-retro.md 写完
 
 ## 核心架构概念
 
@@ -64,12 +75,13 @@ my-ai-platform/
 |----|------|-------------|
 | 工作记忆 | SQLite messages 表，取最近 20 条 | `ContextAssembler.ts` |
 | 情节记忆 | SQLite notes 表 + FTS5 | 自建 |
-| 语义记忆 | sqlite-vec（Phase 2 才上） | `context-transport.ts` |
+| 语义记忆 | sqlite-vec + sentence-transformers（已上线） | `context-transport.ts` |
 
 ### 安全边界（[MD §3.5](MY-AI-PLATFORM_1.md)）
-- `MAX_A2A_DEPTH` = 15（Clowder 真实默认值，不是 5）
-- `MAX_A2A_MENTION_TARGETS` = 2（单条消息最多 @ 两只猫）
-- `MAX_TOOL_LOOP_ITERATIONS` = 建议 8–12，Phase 1 取 10
+- `MAX_A2A_DEPTH` = 5（实际实现值；Clowder 用 15，考虑成本暂取保守值）
+- `MAX_A2A_MENTION_TARGETS` = 2（单条消息最多 @ 两个 Agent）
+- `MAX_TOOL_LOOP_ITERATIONS` = 10（`recursion_limit`，LangGraph 兜底）
+- `HISTORY_LIMIT` = 20（每个 session 最多取最近 N 条，硬截断，待 context-transport 替代）
 
 ### 笔记 status 字段（[MD §2 场景 C](MY-AI-PLATFORM_1.md)）
 ```python
@@ -81,23 +93,36 @@ my-ai-platform/
 ## 关键约定
 
 1. **诚实命名**：不要叫 prompt-chaining 为"Agent 自主路由"。见 [MD §3.0](MY-AI-PLATFORM_1.md)
-2. **Phase 1 不做 A2A**：先把 ReAct tool loop 跑通，再谈多 Agent 协作
+2. **A2A 已上线但不是"Agent 自主路由"**：是 prompt 教模型写 `@agent` + 外部正则扫描，见 [router.py](my-ai-platform/packages/api/src/agent/router.py)
 3. **Clowder 是参考，不是模板**：自建的价值是学 LLM 工程基线（成本/版本/evals/重试/观测），多 Agent 复杂度（context-transport / verdict-detect / multi-mention）只通过读 Clowder 源码学
-4. **范围控制**：Phase 1 不做清单贴在 [MD §8.7](MY-AI-PLATFORM_1.md)，每次想"顺手加 X"时回去看
+4. **范围控制**：Phase 2 剩余项（context-transport / 按场景模型分流 / verdict-detect）优先于新功能
 5. **promptVersion 一等公民**：从第一行代码就传下去（[MD §4.6](MY-AI-PLATFORM_1.md)）
 
-## Phase 0 产物（1 周 Clowder 试用观察）
+## Phase 0 产物（1 周 Clowder 试用观察）✅
 
-Phase 0 强制产出的三个文件（[MD §7.5](MY-AI-PLATFORM_1.md)）：
+Phase 0 强制产出的三个文件（[MD §7.5](MY-AI-PLATFORM_1.md)），已完成：
 - [观察日记](my-ai-platform/docs/setup/phase-0-journal.md) — 每天使用记录
 - [不满足项清单](my-ai-platform/docs/setup/phase-0-gaps.md) — 如果结论是 (b)，这就是 Phase 1 锚点
 - [结论简报](my-ai-platform/docs/setup/phase-0-verdict.md) — 一句话结论 + 3 条证据
 
-## 我故意不做的复杂度（[MD §3.6](MY-AI-PLATFORM_1.md)）
+## Phase 2 Retro
 
-这些 Clowder 有但 Phase 1 不做，知道丢了什么：
-- `context-transport.ts`（跨 Agent 上下文裁剪）→ 我会全量塞历史，浪费 token
-- `verdict-detect.ts`（链路终止判定）→ 两只猫可能互踢皮球
-- `MultiMentionOrchestrator.ts`（多 mention 并行调度）→ 多 mention 只取第一个串行
-- `WorklistRegistry.ts`（跨进程待办登记）→ 进程崩了任务丢
-- `a2a-shadow-detection.ts`（行中间 @x telemetry）→ 看不见模型提到了别的猫
+待写。当前进度：7/10 项完成。阻塞项：context-transport（最大技术债）。
+
+## 下一步（优先级排序）
+
+1. **context-transport** 🔴 — 给 `router.py:route_serial` 的 A2A 消息传递加上智能上下文裁剪，替代硬截断
+2. **模型按场景分流** 🟡 — provider 已建（DeepSeek/GPT/Gemini），加一个 `resolve_model(agent_id, task)` 选择逻辑
+3. **Phase 2 retro** 📋 — 写完 retro，验收当前阶段
+4. **verdict-detect** 🟡 — 链路终止判定，防止 Agent 互踢皮球
+
+## 已知技术债（原 Phase 1"故意不做"清单，[MD §3.6](MY-AI-PLATFORM_1.md)）
+
+| 债项 | Clowder 对应 | 当前状态 | 丢了什么 |
+|------|-------------|---------|---------|
+| context-transport | `context-transport.ts` | 🔴 待做 | 跨 Agent 全量塞历史，token 膨胀；硬截断 20 条可能丢关键上下文 |
+| verdict-detect | `verdict-detect.ts` | 🟡 靠 `recursion_limit=10` 兜底 | 两个 Agent 可能互踢皮球（A 说问 B，B 说问 A） |
+| 模型按场景分流 | — | 🟡 provider 已建，缺路由 | 摘要/整理和深度推理用同一模型，成本不是最优 |
+| MultiMentionOrchestrator | `MultiMentionOrchestrator.ts` | 🟡 串行取第一个 | 多 mention 只取前 2 个串行执行 |
+| WorklistRegistry | `WorklistRegistry.ts` | ⬜ 未开始 | 进程崩了任务丢 |
+| a2a-shadow-detection | `a2a-shadow-detection.ts` | 🟡 依赖正则 | 看不见行中间的 @mention，只扫行首 |

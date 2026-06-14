@@ -25,10 +25,16 @@ from typing import AsyncGenerator
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.agent.registry import get_agent, list_agent_ids
+from src.agent.router_parser import (
+    parse_user_tags,
+    parse_a2a_mentions,
+    detect_shadow_mentions,
+)
 from src.agent.verdict import detect_verdict
 from src.context.assemble import assemble_context, package_handoff
 
 _HISTORY_LIMIT = 20  # 保留兼容；assemble_context 使用 token 预算而非条数
+MAX_A2A_DEPTH = 5
 
 
 def _load_history(conn: sqlite3.Connection, session_id: str) -> list:
@@ -45,68 +51,6 @@ def _save_message(conn: sqlite3.Connection, session_id: str, agent_id: str, role
         (str(uuid.uuid4()), session_id, agent_id, role, content),
     )
     conn.commit()
-
-MAX_A2A_DEPTH = 5
-MAX_MENTION_TARGETS = 2
-
-# 匹配行首 @agent_id，后接可选空格和观点文本
-# 例：@review 早期创业不该做 ToC
-_MENTION_RE = re.compile(
-    r"(?:^|\n)[ \t]*@([a-zA-Z][a-zA-Z0-9_-]*)(?:[ \t]+(.+))?",
-    re.MULTILINE,
-)
-
-# 匹配用户输入中的 #tag，例：#review
-_TAG_RE = re.compile(r"#([a-zA-Z][a-zA-Z0-9_-]*)", re.IGNORECASE)
-
-# 已知的 hashtag → agent_id 映射（Clowder 风格显式路由）
-_TAG_AGENT_MAP = {
-    "review": "review",
-    "critique": "review",
-}
-
-
-def parse_user_tags(text: str) -> tuple[str | None, str]:
-    """
-    解析用户输入中的 #tag，返回 (agent_id, stripped_text)。
-    只取第一个命中的 tag。未命中返回 (None, original_text)。
-    """
-    for m in _TAG_RE.finditer(text):
-        tag = m.group(1).lower()
-        if tag in _TAG_AGENT_MAP:
-            stripped = _TAG_RE.sub("", text).strip()
-            return _TAG_AGENT_MAP[tag], stripped
-    return None, text
-
-
-def parse_a2a_mentions(text: str, current_agent_id: str) -> list[tuple[str, str]]:
-    """
-    从 Agent 输出文本中解析 @mention。
-    返回 [(agent_id, content), ...] 列表，最多 MAX_MENTION_TARGETS 条。
-    - 过滤掉不存在的 Agent
-    - 过滤掉自调用（Agent 不能 @自己）
-    - 跳过 fenced code block 内的 @mention
-    """
-    # 剥除 fenced code blocks
-    clean = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
-
-    valid_ids = set(list_agent_ids())
-    results = []
-
-    for m in _MENTION_RE.finditer(clean):
-        agent_id = m.group(1).lower()
-        content = (m.group(2) or "").strip()
-
-        if agent_id == current_agent_id:
-            continue
-        if agent_id not in valid_ids:
-            continue
-
-        results.append((agent_id, content))
-        if len(results) >= MAX_MENTION_TARGETS:
-            break
-
-    return results
 
 
 async def route_serial(
@@ -193,7 +137,22 @@ async def route_serial(
             _save_message(conn, session_id, agent_id, "assistant", full_text)
 
         # 解析下一跳 — 使用 package_handoff 组装结构化上下文包
-        mentions = parse_a2a_mentions(full_text, agent_id)
+        agent_ids = list_agent_ids()
+
+        mentions = parse_a2a_mentions(full_text, agent_id, agent_ids)
+
+        # ── a2a-shadow-detection：行内 @mention 扫描 ──
+        shadows = detect_shadow_mentions(full_text, agent_id, agent_ids)
+        for sw in shadows:
+            yield {
+                "type": "warning",
+                "agentId": agent_id,
+                "message": sw["warning"],
+                "shadow": True,
+            }
+            # 如果主解析没找到 mention，把 shadow mention 加入队列
+            if not mentions and sw["content"]:
+                mentions.append((sw["agent_id"], sw["content"]))
 
         # ── verdict-detect：链路终止判定 ──
         verdict = detect_verdict(

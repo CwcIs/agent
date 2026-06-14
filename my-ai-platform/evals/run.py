@@ -1,14 +1,121 @@
-# ============================================================
-# 黄金集评测脚本
-# 对应 MD §5.5 工程基础六项之"evals 黄金集" + §8.3 质量验收
-#
-# 数据：evals/golden.jsonl（5 条 input/expected）
-# 指标：通过率 ≥ 80% / JSON 解析失败率 < 5%
-# 使用：python evals/run.py
-#
-# 流程：
-#   1. 读取 golden.jsonl
-#   2. 每条调 capture_note 图
-#   3. 比较输出 title/tags 与 expected 的重叠度
-#   4. 打印通过率报告
-# ============================================================
+#!/usr/bin/env python3
+"""
+黄金集 eval runner
+用法：python evals/run.py
+需要后端在 localhost:8000 跑着，或设置 BASE_URL 环境变量。
+"""
+
+import json
+import os
+import sys
+import asyncio
+import sqlite3
+from pathlib import Path
+
+# 加载项目路径
+sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "api"))
+
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+from langchain_core.messages import HumanMessage, SystemMessage
+from src.agent.providers.deepseek import make_deepseek
+from src.tools import make_tools
+from src.db.schema import get_conn, init_db
+
+GOLDEN_PATH = Path(__file__).parent / "golden.jsonl"
+
+
+def load_cases():
+    with open(GOLDEN_PATH, encoding="utf-8") as f:
+        return [json.loads(l) for l in f if l.strip()]
+
+
+async def run_case(case: dict, llm) -> dict:
+    user_input = case["input"]
+    expect_tool = case.get("expect_tool")
+
+    try:
+        msgs = [
+            SystemMessage(content="""你是用户的个人知识助手，用中文回答。
+你有三个工具：
+- get_notes_summary：获取笔记库聚合统计
+- search_notes：按关键词检索笔记全文
+- save_note：把重要内容存成笔记
+
+使用规则：
+1. 用户问"有什么笔记"、"笔记概况"、"笔记库里有什么" → 调 get_notes_summary
+2. 用户问"有没有记过 X"、"找找 X"、"搜一下 X" → 调 search_notes
+3. 用户要求保存时 → 调 save_note
+4. 纯知识问答（"X 是什么"、"怎么理解 X"）→ 直接回答，不调工具"""),
+            HumanMessage(content=user_input),
+        ]
+        response = await llm.ainvoke(msgs)
+        tool_calls = getattr(response, "tool_calls", []) or []
+        actual_tool = tool_calls[0]["name"] if tool_calls else None
+
+        passed = actual_tool == expect_tool
+        return {
+            "id": case["id"],
+            "passed": passed,
+            "expect": expect_tool,
+            "actual": actual_tool,
+            "description": case["description"],
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "id": case["id"],
+            "passed": False,
+            "expect": expect_tool,
+            "actual": None,
+            "description": case["description"],
+            "error": str(e),
+        }
+
+
+async def main():
+    cases = load_cases()
+    print(f"加载 {len(cases)} 条黄金案例\n")
+
+    # 使用内存数据库初始化工具（eval 只测工具调用决策，不真正执行）
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+
+    tools = make_tools(conn)
+    llm = make_deepseek(tools)
+
+    results = await asyncio.gather(*[run_case(c, llm) for c in cases])
+
+    # 打印结果
+    passed = sum(1 for r in results if r["passed"])
+    total = len(results)
+    json_errors = sum(1 for r in results if r["error"])
+
+    print(f"{'ID':<12} {'结果':<6} {'期望工具':<22} {'实际工具':<22} 描述")
+    print("-" * 90)
+    for r in results:
+        icon = "PASS" if r["passed"] else "FAIL"
+        expect = r["expect"] or "(无)"
+        actual = r["actual"] or "(无)"
+        if r["error"]:
+            actual = f"ERROR: {r['error'][:30]}"
+        print(f"{r['id']:<12} {icon}     {expect:<22} {actual:<22} {r['description']}")
+
+    print("-" * 90)
+    pass_rate = passed / total * 100
+    error_rate = json_errors / total * 100
+    print(f"\n通过率：{passed}/{total} = {pass_rate:.0f}%  (验收线 ≥ 80%)")
+    print(f"错误率：{json_errors}/{total} = {error_rate:.0f}%  (验收线 < 5%)")
+
+    if pass_rate >= 80 and error_rate < 5:
+        print("\n[PASS] 黄金集验收通过")
+        sys.exit(0)
+    else:
+        print("\n[FAIL] 未达验收标准")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

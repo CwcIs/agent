@@ -20,7 +20,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict, Annotated
 
-from src.agent.providers.deepseek import make_deepseek
+from src.agent.providers import resolve_model
 
 
 class AgentState(TypedDict):
@@ -42,7 +42,8 @@ class BaseAgent(ABC):
 
     def _build_graph(self):
         tools = self._tools
-        llm = make_deepseek(tools if tools else None)
+        # Phase 2: 按 agent_id 选择模型（review → GPT, knowledge → DeepSeek）
+        llm = resolve_model(self.agent_id, tools if tools else None)
         system = self.system_prompt
 
         async def call_model(state: AgentState) -> dict:

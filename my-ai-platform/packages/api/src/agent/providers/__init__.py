@@ -2,13 +2,66 @@
 # 对应 MD §4.1 AgentAdapter 接口 + §4.2 路由策略
 #
 # 模型角色分工（MD §4.2）：
-#   Claude  → 提炼结构、生成笔记、综合总结（默认入口）
-#   GPT     → 批判思维、找漏洞、反驳观点
-#   Gemini  → 联想扩展、头脑风暴、跨领域连接
+#   DeepSeek → 默认入口、工具调用、综合总结（成本低、工具调用稳定）
+#   GPT      → 批判思维、找漏洞、反驳观点
+#   Gemini   → 联想扩展、头脑风暴、跨领域连接（Phase 3）
 #
-# Phase 1 只接 Claude 一家（MD §4.2 重要修正）：
-#   三模型分工写出来好看，但感知层只是包装不同 API。
-#   Phase 1 就接三家，分不清差异是模型还是 prompt 导致的。
-#   多模型推迟到 Phase 2 末尾，且要做 A/B 测试。
+# Phase 2 路由策略：
+#   resolve_model(agent_id, tools) 按 agent 选择模型，
+#   如果首选 provider 的 API key 未配置，fallback 到 DeepSeek。
+
+import logging
+import os
 
 from .deepseek import make_deepseek
+from .gpt import make_gpt
+from .gemini import make_gemini
+
+logger = logging.getLogger(__name__)
+
+# agent_id → (provider_name, make_fn)
+_AGENT_MODEL_MAP: dict[str, tuple[str, object]] = {
+    "knowledge": ("deepseek", make_deepseek),
+    "review":    ("gpt",      make_gpt),
+}
+
+_DEFAULT_PROVIDER = make_deepseek
+
+
+def _check_provider_available(name: str) -> bool:
+    """检查 provider 的 API key 是否已配置。"""
+    key_map = {
+        "deepseek": "DEEPSEEK_API_KEY",
+        "gpt":      "OPENAI_API_KEY",
+        "gemini":   "GEMINI_API_KEY",
+    }
+    env_key = key_map.get(name)
+    if env_key is None:
+        return False
+    return bool(os.environ.get(env_key))
+
+
+def resolve_model(agent_id: str, tools: list | None = None):
+    """
+    按 agent_id 选择模型 provider，带 fallback 逻辑。
+
+    规则：
+      - knowledge  → DeepSeek（默认）
+      - review     → GPT（批判思维），若 OPENAI_API_KEY 未配置 → fallback DeepSeek
+      - 未知 agent → DeepSeek
+
+    返回绑定了 tools 的 ChatModel 实例。
+    """
+    provider_name, make_fn = _AGENT_MODEL_MAP.get(agent_id, ("deepseek", make_deepseek))
+
+    if _check_provider_available(provider_name):
+        logger.info("resolve_model agent=%s → %s", agent_id, provider_name)
+    else:
+        logger.warning(
+            "resolve_model agent=%s → %s (unavailable, fallback → deepseek)",
+            agent_id, provider_name,
+        )
+        provider_name = "deepseek"
+        make_fn = make_deepseek
+
+    return make_fn(tools)

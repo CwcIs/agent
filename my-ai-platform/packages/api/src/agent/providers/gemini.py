@@ -10,3 +10,31 @@
 # 底层：
 #   ChatGoogleGenerativeAI (langchain_google_genai)
 # ============================================================
+
+import os
+
+
+def make_gemini(tools: list | None = None):
+    """
+    返回一个绑定了工具的 ChatGoogleGenerativeAI 实例。
+    Phase 3 启用，用于联想扩展 / 头脑风暴场景。
+
+    如果 GEMINI_API_KEY 未配置，resolve_model() 会 fallback 到 DeepSeek。
+    """
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY not set. "
+            "Gemini provider 需要 GEMINI_API_KEY 环境变量。"
+        )
+
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.0-flash",
+        google_api_key=api_key,
+        max_tokens=1024,
+    )
+    if tools:
+        return llm.bind_tools(tools)
+    return llm

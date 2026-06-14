@@ -25,6 +25,7 @@ from typing import AsyncGenerator
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.agent.registry import get_agent, list_agent_ids
+from src.agent.verdict import detect_verdict
 from src.context.assemble import assemble_context, package_handoff
 
 _HISTORY_LIMIT = 20  # 保留兼容；assemble_context 使用 token 预算而非条数
@@ -136,6 +137,7 @@ async def route_serial(
 
     queue: list[tuple[str, list]] = [(start_agent, first_messages)]
     depth = 0
+    handoff_history: list = []  # verdict-detect: 记录每次 handoff 防 loop
 
     while queue and depth < MAX_A2A_DEPTH:
         agent_id, messages = queue.pop(0)
@@ -192,6 +194,24 @@ async def route_serial(
 
         # 解析下一跳 — 使用 package_handoff 组装结构化上下文包
         mentions = parse_a2a_mentions(full_text, agent_id)
+
+        # ── verdict-detect：链路终止判定 ──
+        verdict = detect_verdict(
+            agent_full_text=full_text,
+            mentions=mentions,
+            current_agent_id=agent_id,
+            depth=depth,
+            max_depth=MAX_A2A_DEPTH,
+            handoff_history=handoff_history,
+        )
+
+        if verdict.warning:
+            yield {"type": "warning", "agentId": agent_id, "message": verdict.warning}
+
+        if verdict.should_terminate:
+            yield {"type": "verdict", "agentId": agent_id, "reason": verdict.reason}
+            break
+
         for next_agent_id, mention_content in mentions:
             handoff_msgs = package_handoff(
                 original_user_input=user_input,

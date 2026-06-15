@@ -1,5 +1,5 @@
 # ============================================================
-# SQLite 6 表 Schema（Phase 1）
+# SQLite 8 表 Schema（Phase 1 + 2 + 3）
 # 对应 MD §8.5 Phase 1 全部表 + §4.3 数据模型
 #
 # 表：
@@ -9,11 +9,8 @@
 #   4. llm_calls       — LLM 调用审计（计费 + 重试 + 排查）
 #   5. llm_errors      — JSON 解析 / tool_use 失败记录
 #   6. eval_runs       — 黄金集运行记录
-#
-# 附：
-#   notes_fts (FTS5)   — Phase 1 关键字全文检索
-#   note_embeddings    — Phase 2 向量（sqlite-vec）
-#   embedding_meta     — Phase 2 embedding 指纹（model_id / dim / prompt_version）
+#   7. embedding_meta  — embedding 模型指纹（换模型只加一行）
+#   8. worklist        — A2A 任务持久化（进程崩了不丢 handoff）
 #
 # 为什么这 6 张？（MD §8.5）：
 #   notes / messages 是业务，剩下 4 张全是工程兜底。
@@ -162,6 +159,25 @@ def init_db(conn: sqlite3.Connection) -> None:
             dim        INTEGER NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
+
+        -- ⑧ worklist — A2A 任务持久化（进程崩了不丢 handoff）
+        CREATE TABLE IF NOT EXISTS worklist (
+            id              TEXT PRIMARY KEY,
+            session_id      TEXT NOT NULL,
+            agent_id        TEXT NOT NULL,
+            depth           INTEGER NOT NULL DEFAULT 0,
+            status          TEXT NOT NULL DEFAULT 'pending'
+                                CHECK(status IN ('pending','running','done','failed')),
+            user_input      TEXT NOT NULL,
+            agent_a_output  TEXT NOT NULL DEFAULT '',
+            mention_content TEXT NOT NULL DEFAULT '',
+            tool_events_json TEXT NOT NULL DEFAULT '[]',
+            error_msg       TEXT,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_worklist_session
+            ON worklist(session_id, status);
 
     """)
     conn.commit()

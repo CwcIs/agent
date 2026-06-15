@@ -17,6 +17,7 @@ context-transport（Phase 2）：
   MAX_MENTION_TARGETS = 2（单条消息最多 @2 个 Agent）
 """
 
+import json
 import re
 import sqlite3
 import uuid
@@ -32,6 +33,7 @@ from src.agent.router_parser import (
 )
 from src.agent.verdict import detect_verdict
 from src.agent.orchestrator import orchestrate_parallel
+from src.agent.worklist import save_handoff, mark_done, mark_failed, mark_running, get_pending
 from src.context.assemble import assemble_context, package_handoff
 
 _HISTORY_LIMIT = 20  # 保留兼容；assemble_context 使用 token 预算而非条数
@@ -76,25 +78,88 @@ async def route_serial(
     if conn:
         _save_message(conn, session_id, "user", "user", user_input)
 
+    # ── WorklistRegistry: 恢复上次 crash 遗留的 pending handoff ──
+    if conn:
+        pending_items = get_pending(conn, session_id)
+        for item in pending_items:
+            wid = item["id"]
+            agent_id = item["agent_id"]
+            agent = get_agent(agent_id)
+
+            mark_running(conn, wid)
+
+            if agent is None:
+                mark_failed(conn, wid, f"Unknown agent: {agent_id}")
+                yield {
+                    "type": "error",
+                    "agentId": agent_id,
+                    "message": f"Resume failed: unknown agent '{agent_id}'",
+                }
+                continue
+
+            yield {"type": "agent_switch", "agentId": agent_id}
+
+            # 从 worklist 字段重建 handoff 上下文
+            tool_events = json.loads(item["tool_events_json"])
+            handoff_msgs = package_handoff(
+                original_user_input=item["user_input"],
+                agent_a_full_output=item["agent_a_output"],
+                mention_content=item["mention_content"],
+                tool_events=tool_events,
+            )
+
+            config = {
+                "configurable": {
+                    "thread_id": f"{session_id}:{agent_id}:resume:{wid[:8]}",
+                },
+                "recursion_limit": 10,
+            }
+
+            resume_text = ""
+            try:
+                async for event in agent.astream(handoff_msgs, config):
+                    if event["type"] == "token":
+                        resume_text += event["delta"]
+                    yield event
+            except Exception as exc:
+                mark_failed(conn, wid, str(exc))
+                yield {
+                    "type": "error",
+                    "agentId": agent_id,
+                    "message": f"Resume error: {exc}",
+                }
+                continue
+
+            if conn and resume_text:
+                _save_message(conn, session_id, agent_id, "assistant", resume_text)
+
+            mark_done(conn, wid)
+
     # 第一跳：通过 assemble_context 按优先级 + token 预算加载历史
     history = assemble_context(conn, session_id)[:-1] if conn else []  # 去掉刚存的那条用户消息
     first_messages = history + [HumanMessage(content=cleaned_input)]
 
-    queue: list[tuple[str, list]] = [(start_agent, first_messages)]
+    queue: list[tuple[str, list, str | None]] = [(start_agent, first_messages, None)]  # (agent_id, messages, work_id)
     depth = 0
     handoff_history: list = []  # verdict-detect: 记录每次 handoff 防 loop
 
     while queue and depth < MAX_A2A_DEPTH:
-        agent_id, messages = queue.pop(0)
+        agent_id, messages, work_id = queue.pop(0)
         agent = get_agent(agent_id)
 
         if agent is None:
+            if conn and work_id:
+                mark_failed(conn, work_id, f"Unknown agent: {agent_id}")
             yield {
                 "type": "error",
                 "agentId": agent_id,
                 "message": f"Unknown agent: {agent_id}",
             }
             break
+
+        # ── WorklistRegistry: 标记开始执行 ──
+        if conn and work_id:
+            mark_running(conn, work_id)
 
         # 切换 Agent 通知前端
         if depth > 0:
@@ -108,34 +173,50 @@ async def route_serial(
         full_text = ""
         tool_events: list[dict] = []  # 收集工具调用事件，用于后续 context-transport
 
-        async for event in agent.astream(messages, config):
-            if event["type"] == "token":
-                full_text += event["delta"]
+        try:
+            async for event in agent.astream(messages, config):
+                if event["type"] == "token":
+                    full_text += event["delta"]
 
-            # 旁路收集工具事件（不改变 yield，不影响 SSE）
-            elif event["type"] in ("tool_start", "tool_end"):
-                tool_events.append({
-                    "type": event["type"],
-                    "name": event.get("name"),
-                    "input": event.get("input"),
-                    "result": event.get("result"),
-                })
+                # 旁路收集工具事件（不改变 yield，不影响 SSE）
+                elif event["type"] in ("tool_start", "tool_end"):
+                    tool_events.append({
+                        "type": event["type"],
+                        "name": event.get("name"),
+                        "input": event.get("input"),
+                        "result": event.get("result"),
+                    })
 
-                # 工具结果持久化到 DB，让后续请求也能看到历史工具结果
-                if event["type"] == "tool_end" and conn:
-                    try:
-                        _save_message(
-                            conn, session_id, agent_id, "tool",
-                            f"tool:{event.get('name', 'unknown')}:{event.get('result', '')}",
-                        )
-                    except Exception:
-                        pass  # tool 消息持久化失败不阻塞主流程
+                    # 工具结果持久化到 DB，让后续请求也能看到历史工具结果
+                    if event["type"] == "tool_end" and conn:
+                        try:
+                            _save_message(
+                                conn, session_id, agent_id, "tool",
+                                f"tool:{event.get('name', 'unknown')}:{event.get('result', '')}",
+                            )
+                        except Exception:
+                            pass  # tool 消息持久化失败不阻塞主流程
 
-            yield event  # 透传给 SSE
+                yield event  # 透传给 SSE
+
+        except Exception as exc:
+            if conn and work_id:
+                mark_failed(conn, work_id, str(exc))
+            yield {
+                "type": "error",
+                "agentId": agent_id,
+                "message": f"Agent execution error: {exc}",
+            }
+            depth += 1
+            continue  # 跳过 mention parsing，继续处理队列中下一个任务
 
         # 持久化 assistant 回复
         if conn and full_text:
             _save_message(conn, session_id, agent_id, "assistant", full_text)
+
+        # ── WorklistRegistry: 标记当前任务完成 ──
+        if conn and work_id:
+            mark_done(conn, work_id)
 
         # 解析下一跳 — 使用 package_handoff 组装结构化上下文包
         agent_ids = list_agent_ids()
@@ -194,7 +275,13 @@ async def route_serial(
                 mention_content=mention_content,
                 tool_events=tool_results,
             )
-            queue.append((next_agent_id, handoff_msgs))
+            wid = None
+            if conn:
+                wid = save_handoff(
+                    conn, session_id, next_agent_id, depth,
+                    user_input, full_text, mention_content, tool_results,
+                )
+            queue.append((next_agent_id, handoff_msgs, wid))
         depth += 1
 
     yield {"type": "done", "session_id": session_id}

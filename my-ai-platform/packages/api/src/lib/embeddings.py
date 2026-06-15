@@ -2,16 +2,25 @@
 向量化工具 — Phase 2
 使用 sentence-transformers 本地模型，离线可用，无需 API key。
 模型：paraphrase-multilingual-MiniLM-L12-v2（中英双语，384 维）
+
+方案 B：embed() 通过 run_in_executor() 跑在线程池，
+不阻塞 FastAPI event loop，解决 SSE 流式输出卡顿问题。
 """
 
+import asyncio
+import concurrent.futures
 import json
 import sqlite3
 import struct
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import List
 
 MODEL_ID = "paraphrase-multilingual-MiniLM-L12-v2"
 DIM = 384
+
+# 线程池：专用于 CPU-bound 的 encode 计算
+# max_workers=2 足够（PyTorch 内部已有并行），避免过多线程争 GIL
+_embed_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 
 @lru_cache(maxsize=1)
@@ -20,9 +29,12 @@ def _get_model():
     return SentenceTransformer(MODEL_ID)
 
 
-def embed(text: str) -> List[float]:
+async def embed(text: str) -> List[float]:
+    """异步向量化：把 CPU 密集的 encode 丢到线程池，不阻塞 event loop。"""
     model = _get_model()
-    vec = model.encode(text, normalize_embeddings=True)
+    loop = asyncio.get_running_loop()
+    func = partial(model.encode, text, normalize_embeddings=True)
+    vec = await loop.run_in_executor(_embed_executor, func)
     return vec.tolist()
 
 
@@ -52,10 +64,10 @@ def ensure_vec_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def upsert_embedding(conn: sqlite3.Connection, note_id: str, text: str) -> None:
+async def upsert_embedding(conn: sqlite3.Connection, note_id: str, text: str) -> None:
     """为一条笔记计算并存入向量（title + content 拼接）。"""
     ensure_vec_table(conn)
-    vec = embed(text)
+    vec = await embed(text)
     conn.execute("DELETE FROM note_embeddings WHERE note_id = ?", (note_id,))
     conn.execute(
         "INSERT INTO note_embeddings(note_id, embedding) VALUES (?, ?)",
@@ -64,10 +76,10 @@ def upsert_embedding(conn: sqlite3.Connection, note_id: str, text: str) -> None:
     conn.commit()
 
 
-def search_similar(conn: sqlite3.Connection, query: str, k: int = 5) -> list[dict]:
+async def search_similar(conn: sqlite3.Connection, query: str, k: int = 5) -> list[dict]:
     """向量相似度搜索，返回最近 k 条笔记的 id + distance。"""
     ensure_vec_table(conn)
-    vec = embed(query)
+    vec = await embed(query)
     rows = conn.execute(
         f"""
         SELECT note_id, distance

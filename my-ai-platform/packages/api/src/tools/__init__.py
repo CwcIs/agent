@@ -32,7 +32,7 @@ def make_tools(conn: sqlite3.Connection) -> list:
     """
 
     @tool
-    def search_notes(query: str, k: int = 5) -> str:
+    async def search_notes(query: str, k: int = 5) -> str:
         """
         搜索笔记库，返回最多 k 条相关笔记（JSON 字符串）。
         优先使用语义向量搜索；若向量表为空则 fallback 到关键词检索。
@@ -42,7 +42,7 @@ def make_tools(conn: sqlite3.Connection) -> list:
 
         # 尝试向量搜索
         try:
-            hits = search_similar(conn, query, k)
+            hits = await search_similar(conn, query, k)
             if hits:
                 ids = [h["note_id"] for h in hits]
                 placeholders = ",".join("?" * len(ids))
@@ -83,7 +83,7 @@ def make_tools(conn: sqlite3.Connection) -> list:
         return json.dumps(results, ensure_ascii=False)
 
     @tool
-    def save_note(title: str, content: str, tags: Optional[str] = "") -> str:
+    async def save_note(title: str, content: str, tags: Optional[str] = "") -> str:
         """
         把一条新笔记保存到笔记库。
         tags 用逗号分隔，例如 '产品,增长'。
@@ -100,7 +100,7 @@ def make_tools(conn: sqlite3.Connection) -> list:
         )
         conn.commit()
         try:
-            upsert_embedding(conn, note_id, f"{title}\n{content}")
+            await upsert_embedding(conn, note_id, f"{title}\n{content}")
         except Exception:
             pass
         return json.dumps({"status": "ok", "id": note_id, "title": title}, ensure_ascii=False)
@@ -137,7 +137,7 @@ def make_tools(conn: sqlite3.Connection) -> list:
         }, ensure_ascii=False)
 
     @tool
-    def synthesize_notes(topic: str, k: int = 6) -> str:
+    async def synthesize_notes(topic: str, k: int = 6) -> str:
         """
         跨笔记综合：找到与 topic 最相关的笔记，生成一段综合洞察。
         适合用户问"我对 X 有哪些理解"、"总结一下我关于 X 的想法"、"X 方面我记了什么"。
@@ -148,11 +148,10 @@ def make_tools(conn: sqlite3.Connection) -> list:
         """
         from src.lib.embeddings import search_similar
         from src.agent.providers.deepseek import make_deepseek
-        import asyncio
 
         # 向量搜索相关笔记
         try:
-            hits = search_similar(conn, topic, k)
+            hits = await search_similar(conn, topic, k)
             ids = [h["note_id"] for h in hits]
         except Exception:
             ids = []
@@ -206,18 +205,7 @@ def make_tools(conn: sqlite3.Connection) -> list:
             return resp.content
 
         try:
-            import concurrent.futures
-            import threading
-
-            result_holder = {}
-
-            def _run():
-                result_holder["text"] = asyncio.run(_call())
-
-            t = threading.Thread(target=_run)
-            t.start()
-            t.join(timeout=30)
-            text = result_holder.get("text", "")
+            text = await _call()
 
             text = text.strip()
             if text.startswith("```"):

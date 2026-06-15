@@ -31,6 +31,7 @@ from src.agent.router_parser import (
     detect_shadow_mentions,
 )
 from src.agent.verdict import detect_verdict
+from src.agent.orchestrator import orchestrate_parallel
 from src.context.assemble import assemble_context, package_handoff
 
 _HISTORY_LIMIT = 20  # 保留兼容；assemble_context 使用 token 预算而非条数
@@ -171,12 +172,27 @@ async def route_serial(
             yield {"type": "verdict", "agentId": agent_id, "reason": verdict.reason}
             break
 
+        # ── 路由决策：单 mention → 串行入队；多 mention → 并行 fan-out ──
+        tool_results = [e for e in tool_events if e["type"] == "tool_end"]
+
+        if len(mentions) > 1:
+            # MultiMentionOrchestrator: 并行 fan-out，不继续链式传递
+            async for event in orchestrate_parallel(
+                user_input=user_input,
+                mentions=mentions,
+                agent_a_full_output=full_text,
+                tool_events=tool_results,
+                session_id=session_id,
+            ):
+                yield event
+            break  # 并行 branches 结束后不继续串行链路
+
         for next_agent_id, mention_content in mentions:
             handoff_msgs = package_handoff(
                 original_user_input=user_input,
                 agent_a_full_output=full_text,
                 mention_content=mention_content,
-                tool_events=[e for e in tool_events if e["type"] == "tool_end"],
+                tool_events=tool_results,
             )
             queue.append((next_agent_id, handoff_msgs))
         depth += 1

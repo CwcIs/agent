@@ -4,6 +4,7 @@ import { ref, computed, onMounted } from "vue";
 interface Note {
   id: string;
   title: string;
+  content: string;
   tags: string[];
   status: string;
   created_at: string;
@@ -12,6 +13,7 @@ interface Note {
 const notes = ref<Note[]>([]);
 const filter = ref<"live" | "archived" | "all">("live");
 const loading = ref(false);
+const expandedId = ref<string | null>(null);
 
 const filtered = computed(() =>
   filter.value === "all" ? notes.value : notes.value.filter((n) => n.status === filter.value)
@@ -55,6 +57,10 @@ async function deleteNote(note: Note) {
   await fetch(`/notes/${note.id}`, { method: "DELETE" });
   notes.value = notes.value.filter((n) => n.id !== note.id);
 }
+
+function toggleExpand(noteId: string) {
+  expandedId.value = expandedId.value === noteId ? null : noteId;
+}
 </script>
 
 <template>
@@ -79,14 +85,15 @@ async function deleteNote(note: Note) {
       <li
         v-for="note in filtered"
         :key="note.id"
-        class="group px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors"
+        class="group px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors cursor-pointer"
         :class="{ 'opacity-40': note.status === 'archived' }"
+        @click="toggleExpand(note.id)"
       >
         <div class="flex items-start justify-between gap-1">
-          <span class="text-sm text-gray-300 truncate leading-snug flex-1">{{ note.title }}</span>
+          <span class="text-sm text-gray-300 leading-snug flex-1">{{ note.title }}</span>
 
           <!-- 操作按钮 hover 才显示 -->
-          <div class="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div class="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
             <!-- 归档 / 取消归档 -->
             <button
               class="p-1 rounded hover:bg-white/10 transition-colors"
@@ -122,6 +129,19 @@ async function deleteNote(note: Note) {
           >
             {{ tag }}
           </span>
+        </div>
+
+        <!-- 展开内容 -->
+        <div
+          v-if="expandedId === note.id"
+          class="mt-2.5 pt-2.5 border-t border-white/[0.06]"
+          @click.stop
+        >
+          <p class="text-xs text-gray-400 leading-relaxed whitespace-pre-wrap">{{ note.content }}</p>
+          <div class="flex items-center gap-3 mt-2 text-[10px] text-gray-600">
+            <span>创建于 {{ formatDate(note.created_at) }}</span>
+            <span class="text-gray-700">{{ note.id.slice(0, 8) }}</span>
+          </div>
         </div>
       </li>
     </ul>

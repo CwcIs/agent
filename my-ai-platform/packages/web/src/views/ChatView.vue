@@ -5,11 +5,13 @@ import { marked } from "marked";
 const TAG_AGENT_MAP: Record<string, string> = {
   review: "review",
   critique: "review",
+  brain: "brain",
 };
 
 const TAG_LABEL: Record<string, string> = {
   review: "Review Agent",
   critique: "Review Agent",
+  brain: "Brain Agent",
 };
 
 function parseTag(text: string): { tag: string; label: string } | null {
@@ -66,9 +68,17 @@ function sendMessage() {
 
   eventSource.addEventListener("token", (e) => {
     const data = JSON.parse(e.data);
-    const last = messages.value[messages.value.length - 1];
-    if (last?.role === "assistant" && !last.done && last.agentId === data.agentId) {
-      last.content += data.delta;
+    // 倒序查找该 agent 最近一条未完成的气泡（支持并行 fan-out interleaved 事件）
+    let target: Message | null = null;
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      const m = messages.value[i];
+      if (m.role === "assistant" && !m.done && m.agentId === data.agentId) {
+        target = m;
+        break;
+      }
+    }
+    if (target) {
+      target.content += data.delta;
     } else {
       messages.value.push({ role: "assistant", content: data.delta, agentId: data.agentId, done: false });
     }
@@ -158,10 +168,12 @@ onUnmounted(() => {
               ? 'bg-indigo-500/20 text-indigo-400'
               : msg.agentId === 'review'
                 ? 'bg-amber-500/20 text-amber-400'
-                : 'bg-emerald-500/20 text-emerald-400'
+                : msg.agentId === 'brain'
+                  ? 'bg-purple-500/20 text-purple-400'
+                  : 'bg-emerald-500/20 text-emerald-400'
           ]"
         >
-          {{ msg.role === 'user' ? 'U' : (msg.agentId === 'review' ? 'R' : 'K') }}
+          {{ msg.role === 'user' ? 'U' : (msg.agentId === 'review' ? 'R' : msg.agentId === 'brain' ? 'B' : 'K') }}
         </div>
 
         <!-- 气泡 -->
@@ -177,7 +189,7 @@ onUnmounted(() => {
             v-if="msg.agentId"
             :class="[
               'text-[10px] mb-1 font-mono',
-              msg.agentId === 'review' ? 'text-amber-500' : 'text-emerald-600'
+              msg.agentId === 'review' ? 'text-amber-500' : msg.agentId === 'brain' ? 'text-purple-500' : 'text-emerald-600'
             ]"
           >{{ msg.agentId }}</div>
           <div v-if="msg.role === 'assistant'" class="prose prose-invert prose-sm max-w-none" v-html="marked.parse(msg.content) + (!msg.done ? '<span class=\'inline-block w-0.5 h-3.5 bg-gray-400 ml-0.5 animate-pulse align-text-bottom\'></span>' : '')"></div>
@@ -199,7 +211,7 @@ onUnmounted(() => {
         <textarea
           v-model="input"
           class="flex-1 bg-transparent text-sm text-gray-200 placeholder-gray-600 resize-none outline-none leading-relaxed min-h-[40px] max-h-32 px-2 py-1.5"
-          :placeholder="activeTag ? `#${activeTag.tag} 已激活，直接输入内容...` : '输入碎片想法，或用 #review 触发 Review Agent'"
+          :placeholder="activeTag ? `#${activeTag.tag} 已激活，直接输入内容...` : '输入碎片想法，或用 #review / #brain 触发 Agent'"
           rows="1"
           @keydown="handleKeydown"
           @input="($event.target as HTMLTextAreaElement).style.height = 'auto'; ($event.target as HTMLTextAreaElement).style.height = ($event.target as HTMLTextAreaElement).scrollHeight + 'px'"

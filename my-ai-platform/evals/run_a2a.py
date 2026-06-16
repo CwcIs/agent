@@ -50,6 +50,16 @@ def has_challenge_content(text: str) -> bool:
     return any(marker in text for marker in challenge_markers)
 
 
+def has_association_content(text: str) -> bool:
+    """检查 BrainAgent 输出中是否包含联想/跨界内容。"""
+    association_markers = [
+        "联想", "跨界", "跳跃距离", "灵感", "连接", "关联",
+        "模式", "类比", "隐喻", "领域", "头脑风暴", "扩展",
+        "跨领域", "相似", "借鉴", "平行", "映射",
+    ]
+    return any(marker in text for marker in association_markers)
+
+
 async def run_a2a_case(case: dict, conn: sqlite3.Connection) -> dict:
     """运行单条 A2A 评测：通过 router 执行完整链路。"""
     session_id = f"eval-a2a-{case['id']}"
@@ -84,10 +94,18 @@ async def run_a2a_case(case: dict, conn: sqlite3.Connection) -> dict:
         review_text = full_texts.get("review", "")
         challenge_found = has_challenge_content(review_text)
 
+        # 检查 brain agent 是否输出了联想内容
+        brain_text = full_texts.get("brain", "")
+        association_found = has_association_content(brain_text)
+
         # 检查是否被 loop_detected 终止
         loop_triggered = any(
             v.get("reason") == "loop_detected" for v in verdicts
         )
+
+        # 检查多 mention 是否实际触发了并行（至少两个非 knowledge agent 出现）
+        non_knowledge = [a for a in agents_seen if a != "knowledge"]
+        parallel_triggered = len(non_knowledge) >= 2
 
         # ── 评分 ──
         expected = set(case["expect_agents"])
@@ -96,9 +114,11 @@ async def run_a2a_case(case: dict, conn: sqlite3.Connection) -> dict:
 
         depth_ok = depth >= case.get("expect_min_depth", 2)
         challenge_ok = not case.get("expect_challenge", True) or challenge_found
+        association_ok = not case.get("expect_association", False) or association_found
+        multi_mention_ok = not case.get("expect_multi_mention", False) or parallel_triggered
         chain_ok = has_done and not errors and not loop_triggered
 
-        all_ok = agents_correct and depth_ok and challenge_ok and chain_ok
+        all_ok = agents_correct and depth_ok and challenge_ok and association_ok and multi_mention_ok and chain_ok
 
         return {
             "id": case["id"],
@@ -106,6 +126,8 @@ async def run_a2a_case(case: dict, conn: sqlite3.Connection) -> dict:
             "agents_correct": agents_correct,
             "depth_ok": depth_ok,
             "challenge_found": challenge_ok,
+            "association_found": association_ok,
+            "multi_mention_ok": multi_mention_ok,
             "chain_completed": chain_ok,
             "no_loop": not loop_triggered,
             "actual_agents": agents_seen,
@@ -122,6 +144,8 @@ async def run_a2a_case(case: dict, conn: sqlite3.Connection) -> dict:
             "agents_correct": False,
             "depth_ok": False,
             "challenge_found": False,
+            "association_found": False,
+            "multi_mention_ok": False,
             "chain_completed": False,
             "no_loop": True,
             "actual_agents": [],
@@ -152,12 +176,13 @@ async def main():
         results.append(result)
         status = "✅" if result["passed"] else "❌"
         print(f"    {status} agents={result['actual_agents']} depth={result['actual_depth']} "
-              f"challenge={result['challenge_found']} chain={result['chain_completed']}")
+              f"challenge={result['challenge_found']} assoc={result['association_found']} "
+              f"parallel={result['multi_mention_ok']} chain={result['chain_completed']}")
 
     # ── 汇总 ──
-    print("\n" + "=" * 70)
-    print(f"{'ID':<12} {'通过':<6} {'Agents':<8} {'Depth':<8} {'Challenge':<12} {'Chain':<8} 备注")
-    print("-" * 70)
+    print("\n" + "=" * 80)
+    print(f"{'ID':<12} {'通过':<6} {'Agents':<10} {'Depth':<8} {'Chal':<6} {'Assoc':<6} {'Parallel':<10} {'Chain':<6} 备注")
+    print("-" * 80)
     for r in results:
         icon = "✅" if r["passed"] else "❌"
         notes = ""
@@ -166,18 +191,22 @@ async def main():
         if r["error"]:
             notes = f"ERROR: {r['error'][:40]}"
         print(f"{r['id']:<12} {icon}     "
-              f"{'OK' if r['agents_correct'] else 'FAIL':<8} "
+              f"{'OK' if r['agents_correct'] else 'FAIL':<10} "
               f"{'OK' if r['depth_ok'] else 'FAIL':<8} "
-              f"{'OK' if r['challenge_found'] else 'FAIL':<12} "
-              f"{'OK' if r['chain_completed'] else 'FAIL':<8} "
+              f"{'OK' if r['challenge_found'] else 'FAIL':<6} "
+              f"{'OK' if r['association_found'] else 'FAIL':<6} "
+              f"{'OK' if r['multi_mention_ok'] else 'FAIL':<10} "
+              f"{'OK' if r['chain_completed'] else 'FAIL':<6} "
               f"{notes}")
 
-    print("-" * 70)
+    print("-" * 80)
 
     passed = sum(1 for r in results if r["passed"])
     total = len(results)
     agents_ok = sum(1 for r in results if r["agents_correct"])
     challenge_ok = sum(1 for r in results if r["challenge_found"])
+    association_ok = sum(1 for r in results if r["association_found"])
+    parallel_ok = sum(1 for r in results if r["multi_mention_ok"])
     chain_ok = sum(1 for r in results if r["chain_completed"])
     loop_free = sum(1 for r in results if r["no_loop"])
 
@@ -185,6 +214,8 @@ async def main():
     print(f"  总体通过：{passed}/{total}  (验收线 ≥ 80%)")
     print(f"  Agent 路由正确：{agents_ok}/{total}")
     print(f"  挑战内容产出：{challenge_ok}/{total}")
+    print(f"  联想内容产出：{association_ok}/{total}")
+    print(f"  并行执行正确：{parallel_ok}/{total}")
     print(f"  链路正常终止：{chain_ok}/{total}")
     print(f"  无异常循环：{loop_free}/{total}")
 

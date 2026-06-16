@@ -17,11 +17,13 @@ _default_agent_id: str = "knowledge"
 def init_registry(conn: sqlite3.Connection) -> None:
     from src.agent.agents.knowledge_agent import KnowledgeAgent
     from src.agent.agents.review_agent import ReviewAgent
+    from src.agent.agents.brain_agent import BrainAgent
 
     global _registry
     _registry = {
         "knowledge": KnowledgeAgent(conn),
         "review": ReviewAgent(conn),
+        "brain": BrainAgent(conn),
     }
 
 

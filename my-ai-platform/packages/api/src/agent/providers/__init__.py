@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _AGENT_MODEL_MAP: dict[str, tuple[str, object]] = {
     "knowledge": ("deepseek", make_deepseek),
     "review":    ("gpt",      make_gpt),
+    "brain":     ("gemini",   make_gemini),
 }
 
 _DEFAULT_PROVIDER = make_deepseek

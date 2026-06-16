@@ -113,6 +113,68 @@ def make_tools(conn: sqlite3.Connection) -> list:
         return json.dumps({"status": "ok", "id": note_id, "title": title}, ensure_ascii=False)
 
     @tool
+    def get_note(note_id: str) -> str:
+        """
+        按 ID 读取一条笔记的完整内容（title + content + tags + 时间）。
+        note_id 可以是完整 UUID 或前 8 位前缀。
+        用户说"看一下那条笔记"、"展开笔记 xxx"、"读一下 xxx"时优先调用。
+        返回 JSON：{id, title, content, tags, status, created_at, updated_at}
+        """
+        # 支持前缀匹配
+        if len(note_id) >= 8:
+            rows = conn.execute(
+                "SELECT id, title, content, tags_json, status, created_at, updated_at "
+                "FROM notes WHERE id LIKE ? AND deleted_at IS NULL LIMIT 2",
+                (note_id + "%",),
+            ).fetchall()
+            if len(rows) == 1:
+                r = rows[0]
+            elif len(rows) > 1:
+                # 多个匹配，要求更精确的 ID
+                row = conn.execute(
+                    "SELECT id, title, content, tags_json, status, created_at, updated_at "
+                    "FROM notes WHERE id = ? AND deleted_at IS NULL",
+                    (note_id,),
+                ).fetchone()
+                r = row
+            else:
+                r = None
+        else:
+            r = conn.execute(
+                "SELECT id, title, content, tags_json, status, created_at, updated_at "
+                "FROM notes WHERE id = ? AND deleted_at IS NULL",
+                (note_id,),
+            ).fetchone()
+
+        if not r:
+            return json.dumps({"error": f"笔记 {note_id} 不存在或已删除"}, ensure_ascii=False)
+
+        d = dict(r)
+        d["tags"] = json.loads(d.pop("tags_json", "[]"))
+        return json.dumps(d, ensure_ascii=False)
+
+    @tool
+    def archive_note(note_id: str) -> str:
+        """
+        归档一条笔记（标记为 archived，不再参与搜索和合成）。
+        用户说"归档这条"、"这条笔记过时了"时调用。
+        返回 JSON：{status: "archived", id: note_id}
+        """
+        row = conn.execute(
+            "SELECT id FROM notes WHERE id = ? AND deleted_at IS NULL AND status != 'archived'",
+            (note_id,),
+        ).fetchone()
+        if not row:
+            return json.dumps({"error": f"笔记 {note_id} 不存在、已删除或已归档"}, ensure_ascii=False)
+
+        conn.execute(
+            "UPDATE notes SET status='archived', updated_at=datetime('now','localtime') WHERE id=?",
+            (note_id,),
+        )
+        conn.commit()
+        return json.dumps({"status": "archived", "id": note_id}, ensure_ascii=False)
+
+    @tool
     def get_notes_summary() -> str:
         """
         获取笔记库的聚合统计摘要：总数、最近7天新增、各标签分布。
@@ -227,4 +289,4 @@ def make_tools(conn: sqlite3.Connection) -> list:
             "gaps": parsed.get("gaps", []),
         }, ensure_ascii=False)
 
-    return [search_notes, save_note, get_notes_summary, synthesize_notes]
+    return [search_notes, save_note, get_note, archive_note, get_notes_summary, synthesize_notes]

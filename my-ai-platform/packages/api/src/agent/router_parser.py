@@ -37,6 +37,7 @@ _TAG_RE = re.compile(r"#([a-zA-Z][a-zA-Z0-9_-]*)", re.IGNORECASE)
 _TAG_AGENT_MAP = {
     "review": "review",
     "critique": "review",
+    "brain": "brain",
 }
 
 

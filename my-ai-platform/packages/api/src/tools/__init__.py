@@ -16,6 +16,7 @@
 #   - Tool Loop 自己手写在 react_tool_loop.py
 # ============================================================
 
+import asyncio
 import json
 import sqlite3
 import uuid
@@ -23,6 +24,14 @@ from typing import Optional
 
 from langchain_core.tools import tool
 from src.lib.embeddings import upsert_embedding, search_similar
+
+
+async def _background_embed(conn: sqlite3.Connection, note_id: str, title: str, content: str) -> None:
+    """后台异步写入向量 embedding，失败静默忽略。"""
+    try:
+        await upsert_embedding(conn, note_id, f"{title}\n{content}")
+    except Exception:
+        pass
 
 
 def make_tools(conn: sqlite3.Connection) -> list:
@@ -99,10 +108,8 @@ def make_tools(conn: sqlite3.Connection) -> list:
             (note_id, title, content, json.dumps(tags_list, ensure_ascii=False)),
         )
         conn.commit()
-        try:
-            await upsert_embedding(conn, note_id, f"{title}\n{content}")
-        except Exception:
-            pass
+        # 后台异步写入 embedding，不阻塞 save_note 返回
+        asyncio.create_task(_background_embed(conn, note_id, title, content))
         return json.dumps({"status": "ok", "id": note_id, "title": title}, ensure_ascii=False)
 
     @tool

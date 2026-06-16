@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import atexit
 import concurrent.futures
 import json
 import sqlite3
@@ -21,6 +22,8 @@ DIM = 384
 # 线程池：专用于 CPU-bound 的 encode 计算
 # max_workers=2 足够（PyTorch 内部已有并行），避免过多线程争 GIL
 _embed_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+# Ctrl+C 时立刻取消等待中的 future，不等 worker 线程跑完 model.encode()
+atexit.register(lambda: _embed_executor.shutdown(wait=False, cancel_futures=True))
 
 
 @lru_cache(maxsize=1)

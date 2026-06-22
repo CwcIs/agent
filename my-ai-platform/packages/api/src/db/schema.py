@@ -180,4 +180,12 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON worklist(session_id, status);
 
     """)
+
+    # ── 迁移：Phase 4 daily_digests 增加 trends / anomalies 列 ──
+    for col in ("trends", "anomalies"):
+        try:
+            conn.execute(f"ALTER TABLE daily_digests ADD COLUMN {col} TEXT NOT NULL DEFAULT '[]'")
+        except Exception:
+            pass  # 列已存在
+
     conn.commit()

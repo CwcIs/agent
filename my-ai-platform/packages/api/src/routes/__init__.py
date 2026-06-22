@@ -195,6 +195,8 @@ async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
             "narrative": cached[1],
             "followUps": json.loads(cached[2]),
             "citedNotes": json.loads(cached[3]),
+            "trends": json.loads(cached["trends"] if "trends" in cached.keys() else "[]"),
+            "anomalies": json.loads(cached["anomalies"] if "anomalies" in cached.keys() else "[]"),
         }
 
     # 取最近 7 天的 live 笔记（没有"昨天"限制，否则新用户永远没数据）
@@ -216,6 +218,8 @@ async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
             "narrative": "最近还没有笔记，去 Chat 里写第一条吧。",
             "followUps": ["我想开始记录今天的想法", "帮我新建一条笔记", "笔记库能存什么内容？"],
             "citedNotes": [],
+            "trends": [],
+            "anomalies": [],
         }
         _cache_digest(conn, today, result)
         return result
@@ -262,14 +266,19 @@ async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
         "noteCount": note_count,
         **parsed,
     }
+    # 趋势检测（纯数据计算，不调 LLM）
+    patterns = _detect_trends(conn, rows)
+    result["trends"] = patterns["trends"]
+    result["anomalies"] = patterns["anomalies"]
     _cache_digest(conn, today, result)
     return result
 
 
 def _cache_digest(conn: sqlite3.Connection, today: str, payload: dict) -> None:
     conn.execute(
-        "INSERT OR REPLACE INTO daily_digests (id, date, note_count, narrative, follow_ups, cited_notes) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO daily_digests "
+        "(id, date, note_count, narrative, follow_ups, cited_notes, trends, anomalies) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             str(uuid.uuid4()),
             today,
@@ -277,6 +286,67 @@ def _cache_digest(conn: sqlite3.Connection, today: str, payload: dict) -> None:
             payload.get("narrative", ""),
             json.dumps(payload.get("followUps", []), ensure_ascii=False),
             json.dumps(payload.get("citedNotes", []), ensure_ascii=False),
+            json.dumps(payload.get("trends", []), ensure_ascii=False),
+            json.dumps(payload.get("anomalies", []), ensure_ascii=False),
         ),
     )
     conn.commit()
+
+
+def _detect_trends(conn: sqlite3.Connection, note_rows: list) -> dict:
+    """
+    分析笔记创建模式，检测趋势和异常。
+    纯数据计算，不调用 LLM。
+    """
+    if len(note_rows) < 2:
+        return {"trends": [], "anomalies": []}
+
+    from collections import defaultdict
+
+    # 按天分组 + 标签统计
+    by_day: dict[str, int] = defaultdict(int)
+    by_tag: dict[str, int] = defaultdict(int)
+    for r in note_rows:
+        d = dict(r)
+        day = d["created_at"][:10]
+        by_day[day] += 1
+        for tag in json.loads(d.get("tags_json", "[]")):
+            by_tag[tag] += 1
+
+    trends: list[str] = []
+    anomalies: list[str] = []
+
+    # 频率趋势：前半 vs 后半
+    sorted_days = sorted(by_day.keys())
+    if len(sorted_days) >= 3:
+        mid = len(sorted_days) // 2
+        first_half = sum(by_day[d] for d in sorted_days[:mid])
+        second_half = sum(by_day[d] for d in sorted_days[mid:])
+        if first_half > 0 and second_half > first_half * 1.5:
+            trends.append(f"笔记频率上升：后段 {second_half} 条 vs 前段 {first_half} 条")
+        elif second_half > 0 and first_half > second_half * 1.5:
+            trends.append(f"笔记频率下降：后段 {second_half} 条 vs 前段 {first_half} 条")
+
+    # 标签热度
+    for tag, count in sorted(by_tag.items(), key=lambda x: -x[1]):
+        if count >= 3:
+            trends.append(f"关注话题「{tag}」出现 {count} 次")
+        else:
+            break
+
+    # 异常空白日（活跃日之间有 0 笔记的日期，最多报 2 个）
+    if len(sorted_days) >= 3:
+        from datetime import date as dt, timedelta
+        active_set = set(sorted_days)
+        start = dt.fromisoformat(sorted_days[0])
+        end = dt.fromisoformat(sorted_days[-1])
+        d = start
+        while d <= end:
+            day_str = d.isoformat()
+            if day_str not in active_set and day_str != dt.today().isoformat():
+                anomalies.append(f"{day_str} 无新笔记")
+                if len(anomalies) >= 2:
+                    break
+            d += timedelta(days=1)
+
+    return {"trends": trends[:5], "anomalies": anomalies[:3]}

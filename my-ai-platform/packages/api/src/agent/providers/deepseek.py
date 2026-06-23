@@ -14,3 +14,23 @@
 #   一次 messages.create / stream 调用本身不循环，
 #   循环在 react_tool_loop.py 的 runToolLoop（MD §3.3.2）
 # ============================================================
+
+import os
+
+from langchain_openai import ChatOpenAI
+
+
+def make_deepseek(tools: list | None = None) -> ChatOpenAI:
+    """
+    返回一个绑定了工具的 ChatOpenAI 实例（指向 DeepSeek）。
+    Phase 1 用 deepseek-chat（成本低、工具调用稳定）。
+    """
+    llm = ChatOpenAI(
+        model="deepseek-chat",
+        openai_api_key=os.environ["DEEPSEEK_API_KEY"],
+        openai_api_base="https://api.deepseek.com",
+        max_tokens=1024,
+    )
+    if tools:
+        return llm.bind_tools(tools)
+    return llm

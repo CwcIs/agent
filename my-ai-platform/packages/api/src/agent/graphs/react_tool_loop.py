@@ -35,3 +35,77 @@
 #     → tool_use(saveNote) → tool_result → text("已保存")
 #   这串序列出现一次，"我懂 Agent 是怎么自己干活的"才算落地。
 # ============================================================
+
+import sqlite3
+from typing import Annotated
+
+from langchain_core.messages import BaseMessage, SystemMessage
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+from typing_extensions import TypedDict
+
+from src.agent.providers.deepseek import make_deepseek
+from src.tools import make_tools
+
+# MAX_TOOL_LOOP_ITERATIONS = 10（MD §3.5）
+# LangGraph 用 recursion_limit 控制，传给 compile() 的 config
+MAX_ITERATIONS = 10
+
+SYSTEM_PROMPT = """你是用户的个人知识助手，用中文回答。
+你有五个工具：
+- get_notes_summary：获取笔记库聚合统计（总数、近7天新增、主要话题分布）
+- search_notes：按关键词检索笔记全文，返回匹配列表
+- synthesize_notes：跨笔记综合，生成关于某话题的洞察分析
+- save_note：把重要内容存成笔记
+- request_review：对一段观点发起思维挑战，找逻辑漏洞/遗漏假设/反例
+
+使用规则：
+1. 用户问"有什么笔记"、"笔记概况"、"笔记库里有什么" → 调 get_notes_summary
+2. 用户问"有没有记过 X"、"找找 X"、"搜一下 X"、"X 相关的笔记" → 调 search_notes
+3. 用户问"我对 X 有哪些理解"、"总结我关于 X 的想法"、"X 方面我记了什么" → 调 synthesize_notes
+4. 用户说"帮我 review"、"挑战一下"、"找漏洞"、"这个观点有问题吗" → 调 request_review，把用户的观点作为 content 传入
+5. search_notes 返回空时 → 告知没找到，询问是否换词或保存新笔记
+6. 用户要求保存时 → 调 save_note
+7. 纯知识问答（"X 是什么"、"怎么理解 X"）→ 直接回答，不调工具"""
+
+
+class AgentState(TypedDict):
+    messages: Annotated[list[BaseMessage], add_messages]
+
+
+def build_graph(
+    conn: sqlite3.Connection,
+    checkpointer: AsyncSqliteSaver,
+):
+    """
+    构建 ReAct 图并编译。
+    conn         — 业务 DB 连接（tools 用）
+    checkpointer — AsyncSqliteSaver（多轮对话持久化）
+    """
+    tools = make_tools(conn)
+    llm = make_deepseek(tools)
+
+    async def call_model(state: AgentState) -> dict:
+        msgs = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
+        response = await llm.ainvoke(msgs)
+        return {"messages": [response]}
+
+    def should_continue(state: AgentState) -> str:
+        last = state["messages"][-1]
+        return "tools" if getattr(last, "tool_calls", None) else END
+
+    graph = (
+        StateGraph(AgentState)
+        .add_node("call_model", call_model)
+        .add_node("tools", ToolNode(tools))
+        .set_entry_point("call_model")
+        .add_conditional_edges("call_model", should_continue)
+        .add_edge("tools", "call_model")
+        .compile(
+            checkpointer=checkpointer,
+            # recursion_limit 限制最大循环轮数，防止死循环
+        )
+    )
+    return graph

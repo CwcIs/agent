@@ -1,68 +1,153 @@
 <script setup lang="ts">
-/**
- * 笔记列表 — 左侧面板
- * 显示 status=live 的笔记，支持过滤 superseded/archived
- */
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 
 interface Note {
   id: string;
   title: string;
+  content: string;
   tags: string[];
   status: string;
-  createdAt: string;
+  created_at: string;
 }
 
 const notes = ref<Note[]>([]);
-const filter = ref<"live" | "superseded" | "archived" | "all">("live");
+const filter = ref<"live" | "archived" | "all">("live");
+const loading = ref(false);
+const expandedId = ref<string | null>(null);
 
-onMounted(async () => {
-  const resp = await fetch("/notes");
-  const data = await resp.json();
-  notes.value = data.notes;
-});
+const filtered = computed(() =>
+  filter.value === "all" ? notes.value : notes.value.filter((n) => n.status === filter.value)
+);
+
+const statusLabels: Record<string, string> = {
+  live: "有效",
+  archived: "归档",
+  all: "全部",
+};
+
+async function fetchNotes() {
+  try {
+    const resp = await fetch("/notes");
+    const data = await resp.json();
+    notes.value = data.notes ?? [];
+  } catch {
+    notes.value = [];
+  }
+}
+
+onMounted(fetchNotes);
+
+function formatDate(s: string) {
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? s : `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+async function archiveNote(note: Note) {
+  const newStatus = note.status === "archived" ? "live" : "archived";
+  await fetch(`/notes/${note.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status: newStatus }),
+  });
+  note.status = newStatus;
+}
+
+async function deleteNote(note: Note) {
+  if (!confirm(`删除「${note.title}」？`)) return;
+  await fetch(`/notes/${note.id}`, { method: "DELETE" });
+  notes.value = notes.value.filter((n) => n.id !== note.id);
+}
+
+function toggleExpand(noteId: string) {
+  expandedId.value = expandedId.value === noteId ? null : noteId;
+}
 </script>
 
 <template>
-  <div>
-    <h2 class="text-lg font-semibold mb-3">📒 笔记</h2>
-
-    <!-- 状态过滤 -->
-    <div class="flex gap-1 mb-3 text-xs">
+  <div class="flex flex-col h-full">
+    <!-- 过滤标签 -->
+    <div class="flex gap-1 px-3 pt-3 pb-2">
       <button
-        v-for="s in (['live', 'superseded', 'archived', 'all'] as const)"
+        v-for="s in (['live', 'archived', 'all'] as const)"
         :key="s"
-        :class="['px-2 py-1 rounded', filter === s ? 'bg-blue-100 text-blue-700' : 'text-gray-500']"
+        :class="[
+          'px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors',
+          filter === s ? 'bg-white/10 text-gray-200' : 'text-gray-600 hover:text-gray-400'
+        ]"
         @click="filter = s"
       >
-        {{ s === 'all' ? '全部' : s }}
+        {{ statusLabels[s] }}
       </button>
     </div>
 
-    <!-- 笔记列表 -->
-    <ul class="space-y-2">
+    <!-- 列表 -->
+    <ul class="flex-1 overflow-y-auto px-2 pb-3 space-y-0.5">
       <li
-        v-for="note in notes"
+        v-for="note in filtered"
         :key="note.id"
-        class="p-2 rounded border hover:border-blue-300 cursor-pointer"
-        :class="{ 'opacity-50': note.status !== 'live' }"
+        class="group px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors cursor-pointer"
+        :class="{ 'opacity-40': note.status === 'archived' }"
+        @click="toggleExpand(note.id)"
       >
-        <div class="text-sm font-medium truncate">{{ note.title }}</div>
-        <div class="flex gap-1 mt-1">
+        <div class="flex items-start justify-between gap-1">
+          <span class="text-sm text-gray-300 leading-snug flex-1">{{ note.title }}</span>
+
+          <!-- 操作按钮 hover 才显示 -->
+          <div class="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
+            <!-- 归档 / 取消归档 -->
+            <button
+              class="p-1 rounded hover:bg-white/10 transition-colors"
+              :title="note.status === 'archived' ? '取消归档' : '归档'"
+              @click.stop="archiveNote(note)"
+            >
+              <svg class="w-3 h-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8l1 12a2 2 0 002 2h8a2 2 0 002-2L19 8" />
+              </svg>
+            </button>
+            <!-- 删除 -->
+            <button
+              class="p-1 rounded hover:bg-red-500/20 transition-colors"
+              title="删除"
+              @click.stop="deleteNote(note)"
+            >
+              <svg class="w-3 h-3 text-gray-500 hover:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
+          </div>
+
+          <span class="text-[10px] text-gray-700 shrink-0 mt-0.5 group-hover:hidden">{{ formatDate(note.created_at) }}</span>
+        </div>
+
+        <div v-if="note.tags?.length" class="flex gap-1 mt-1.5 flex-wrap">
           <span
             v-for="tag in note.tags"
             :key="tag"
-            class="text-xs px-1.5 py-0.5 bg-gray-100 rounded"
+            class="text-[10px] px-1.5 py-0.5 bg-white/[0.05] text-gray-500 rounded"
           >
             {{ tag }}
           </span>
         </div>
-        <div class="text-xs text-gray-400 mt-1">{{ note.createdAt }}</div>
+
+        <!-- 展开内容 -->
+        <div
+          v-if="expandedId === note.id"
+          class="mt-2.5 pt-2.5 border-t border-white/[0.06]"
+          @click.stop
+        >
+          <p class="text-xs text-gray-400 leading-relaxed whitespace-pre-wrap">{{ note.content }}</p>
+          <div class="flex items-center gap-3 mt-2 text-[10px] text-gray-600">
+            <span>创建于 {{ formatDate(note.created_at) }}</span>
+            <span class="text-gray-700">{{ note.id.slice(0, 8) }}</span>
+          </div>
+        </div>
       </li>
     </ul>
 
-    <p v-if="!notes.length" class="text-sm text-gray-400 mt-4">
-      还没有笔记，去 Chat 里写第一条吧
-    </p>
+    <div v-if="!filtered.length" class="px-4 py-6 text-center">
+      <p class="text-xs text-gray-700">还没有笔记</p>
+    </div>
   </div>
 </template>

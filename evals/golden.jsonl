@@ -1,0 +1,14 @@
+{"id": "summary-1", "input": "我有什么笔记", "expect_tool": "get_notes_summary", "description": "概览请求应调用 get_notes_summary"}
+{"id": "summary-2", "input": "笔记库里有什么", "expect_tool": "get_notes_summary", "description": "概览请求变体"}
+{"id": "summary-3", "input": "给我看看笔记概况", "expect_tool": "get_notes_summary", "description": "概览请求变体2"}
+{"id": "search-1", "input": "帮我找找关于 Claude 的笔记", "expect_tool": "search_notes", "description": "明确关键词应调用 search_notes"}
+{"id": "search-2", "input": "我之前有没有记过 B 端产品相关的内容", "expect_tool": "search_notes", "description": "历史查询应调用 search_notes"}
+{"id": "search-3", "input": "搜一下 AI 记忆", "expect_tool": "search_notes", "description": "搜索意图应调用 search_notes"}
+{"id": "save-1", "input": "帮我把这个想法记下来：ReAct loop 的本质是让模型自己决定什么时候停", "expect_tool": "save_note", "description": "保存意图应调用 save_note"}
+{"id": "save-2", "input": "保存一条笔记，标题是'B端优先'，内容是先做企业客户再做个人用户", "expect_tool": "save_note", "description": "明确保存请求"}
+{"id": "synth-1", "input": "我对 AI 有哪些理解", "expect_tool": "synthesize_notes", "description": "跨笔记综合请求应调用 synthesize_notes"}
+{"id": "synth-2", "input": "总结一下我关于 Claude 的想法", "expect_tool": "synthesize_notes", "description": "综合请求变体"}
+{"id": "review-1", "input": "帮我 review 这个想法：B 端产品应该优先于 C 端", "expect_tool": null, "description": "review 请求 KnowledgeAgent 不调工具，直接回复并写 @review 触发 A2A"}
+{"id": "review-2", "input": "挑战一下这个观点：早期创业公司不应该做 ToC", "expect_tool": null, "description": "挑战请求 KnowledgeAgent 直接回复并写 @review 触发 A2A"}
+{"id": "no-tool-1", "input": "你好", "expect_tool": null, "description": "闲聊不应调用任何工具"}
+{"id": "no-tool-2", "input": "LangGraph 是什么", "expect_tool": null, "description": "知识问答不应调用工具"}

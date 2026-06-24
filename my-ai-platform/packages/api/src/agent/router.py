@@ -60,6 +60,7 @@ async def route_serial(
     user_input: str,
     session_id: str,
     conn: sqlite3.Connection | None = None,
+    prompt_version: str = "v1",
 ) -> AsyncGenerator[dict, None]:
     """
     主路由循环：
@@ -115,6 +116,8 @@ async def route_serial(
                 "recursion_limit": 10,
             }
 
+            agent.set_runtime_context(session_id, prompt_version)
+
             resume_text = ""
             try:
                 async for event in agent.astream(handoff_msgs, config):
@@ -169,6 +172,8 @@ async def route_serial(
             "configurable": {"thread_id": f"{session_id}:{agent_id}:{depth}"},
             "recursion_limit": 10,
         }
+
+        agent.set_runtime_context(session_id, prompt_version)
 
         full_text = ""
         tool_events: list[dict] = []  # 收集工具调用事件，用于后续 context-transport
@@ -258,12 +263,24 @@ async def route_serial(
 
         if len(mentions) > 1:
             # MultiMentionOrchestrator: 并行 fan-out，不继续链式传递
+            # 先为每个 parallel mention 创建 worklist 条目，保证 crash recovery
+            parallel_wids: list[str] = []
+            if conn:
+                for next_agent_id, mention_content in mentions:
+                    wid = save_handoff(
+                        conn, session_id, next_agent_id, depth,
+                        user_input, full_text, mention_content, tool_results,
+                    )
+                    parallel_wids.append(wid)
             async for event in orchestrate_parallel(
                 user_input=user_input,
                 mentions=mentions,
                 agent_a_full_output=full_text,
                 tool_events=tool_results,
                 session_id=session_id,
+                conn=conn,
+                worklist_ids=parallel_wids if parallel_wids else None,
+                prompt_version=prompt_version,
             ):
                 yield event
             break  # 并行 branches 结束后不继续串行链路

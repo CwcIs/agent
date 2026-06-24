@@ -39,6 +39,7 @@ def get_conn() -> sqlite3.Connection:
     conn.enable_load_extension(False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")  # 5s timeout to avoid "database is locked" under concurrent writes
     return conn
 
 

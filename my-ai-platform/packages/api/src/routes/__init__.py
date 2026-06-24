@@ -62,9 +62,12 @@ async def chat_stream(
     sid = session_id or str(uuid.uuid4())
 
     async def event_generator():
+        # 每个 SSE 流创建独立连接，避免多流并发写同一连接导致 database is locked
+        from src.db.schema import get_conn as new_conn
+        stream_conn = new_conn()
         from src.agent.router import route_serial
         try:
-            async for event in route_serial(input, sid, conn=_conn):
+            async for event in route_serial(input, sid, conn=stream_conn, prompt_version=prompt_version):
                 etype = event.get("type")
 
                 if etype == "token":
@@ -116,6 +119,8 @@ async def chat_stream(
 
         except Exception as exc:
             yield {"event": "error", "data": str(exc)}
+        finally:
+            stream_conn.close()
 
     return EventSourceResponse(event_generator())
 

@@ -333,11 +333,9 @@ def _detect_trends(conn: sqlite3.Connection, note_rows: list) -> dict:
             trends.append(f"笔记频率下降：后段 {second_half} 条 vs 前段 {first_half} 条")
 
     # 标签热度
-    for tag, count in sorted(by_tag.items(), key=lambda x: -x[1]):
-        if count >= 3:
-            trends.append(f"关注话题「{tag}」出现 {count} 次")
-        else:
-            break
+    hot_tags = [(tag, count) for tag, count in sorted(by_tag.items(), key=lambda x: (-x[1], x[0])) if count >= 3]
+    for tag, count in hot_tags:
+        trends.append(f"关注话题「{tag}」出现 {count} 次")
 
     # 异常空白日（活跃日之间有 0 笔记的日期，最多报 2 个）
     if len(sorted_days) >= 3:

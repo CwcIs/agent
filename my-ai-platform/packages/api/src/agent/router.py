@@ -34,7 +34,7 @@ from src.agent.router_parser import (
 from src.agent.verdict import detect_verdict
 from src.agent.orchestrator import orchestrate_parallel
 from src.agent.worklist import save_handoff, mark_done, mark_failed, mark_running, get_pending
-from src.context.assemble import assemble_context, package_handoff
+from src.context.assemble import assemble_context, package_handoff, agent_display_name
 
 _HISTORY_LIMIT = 20  # 保留兼容；assemble_context 使用 token 预算而非条数
 MAX_A2A_DEPTH = 5
@@ -75,10 +75,6 @@ async def route_serial(
     tag_agent, cleaned_input = parse_user_tags(user_input)
     start_agent = tag_agent or "knowledge"
 
-    # 持久化用户消息
-    if conn:
-        _save_message(conn, session_id, "user", "user", user_input)
-
     # ── WorklistRegistry: 恢复上次 crash 遗留的 pending handoff ──
     if conn:
         pending_items = get_pending(conn, session_id)
@@ -107,6 +103,7 @@ async def route_serial(
                 agent_a_full_output=item["agent_a_output"],
                 mention_content=item["mention_content"],
                 tool_events=tool_events,
+                agent_a_name=agent_display_name(item.get("agent_a_id") or "knowledge"),
             )
 
             config = {
@@ -139,8 +136,12 @@ async def route_serial(
             mark_done(conn, wid)
 
     # 第一跳：通过 assemble_context 按优先级 + token 预算加载历史
-    history = assemble_context(conn, session_id)[:-1] if conn else []  # 去掉刚存的那条用户消息
+    history = assemble_context(conn, session_id) if conn else []
     first_messages = history + [HumanMessage(content=cleaned_input)]
+
+    # 持久化用户消息（在 assemble 之后，避免重复出现在历史中）
+    if conn:
+        _save_message(conn, session_id, "user", "user", user_input)
 
     queue: list[tuple[str, list, str | None]] = [(start_agent, first_messages, None)]  # (agent_id, messages, work_id)
     depth = 0
@@ -270,6 +271,7 @@ async def route_serial(
                     wid = save_handoff(
                         conn, session_id, next_agent_id, depth,
                         user_input, full_text, mention_content, tool_results,
+                        agent_a_id=agent_id,
                     )
                     parallel_wids.append(wid)
             async for event in orchestrate_parallel(
@@ -281,6 +283,7 @@ async def route_serial(
                 conn=conn,
                 worklist_ids=parallel_wids if parallel_wids else None,
                 prompt_version=prompt_version,
+                agent_a_id=agent_id,
             ):
                 yield event
             break  # 并行 branches 结束后不继续串行链路
@@ -291,12 +294,14 @@ async def route_serial(
                 agent_a_full_output=full_text,
                 mention_content=mention_content,
                 tool_events=tool_results,
+                agent_a_name=agent_display_name(agent_id),
             )
             wid = None
             if conn:
                 wid = save_handoff(
                     conn, session_id, next_agent_id, depth,
                     user_input, full_text, mention_content, tool_results,
+                    agent_a_id=agent_id,
                 )
             queue.append((next_agent_id, handoff_msgs, wid))
         depth += 1

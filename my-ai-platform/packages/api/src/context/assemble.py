@@ -40,6 +40,18 @@ FACT_SECTION_BUDGET_RATIO = 0.4   # 事实段最多占 40% 预算
 CONCLUSION_SECTION_BUDGET_RATIO = 0.5  # 结论段最多占 50% 预算
 SHORT_MSG_THRESHOLD = 200          # 短消息阈值（字符数）
 
+# agent_id → 中文显示名
+_AGENT_DISPLAY_NAMES: dict[str, str] = {
+    "knowledge": "Knowledge Agent",
+    "review": "Review Agent",
+    "brain": "Brain Agent",
+}
+
+
+def agent_display_name(agent_id: str) -> str:
+    """返回 Agent 的中文显示名，未知 agent_id 退化为 '{agent_id} Agent'。"""
+    return _AGENT_DISPLAY_NAMES.get(agent_id, f"{agent_id} Agent")
+
 
 # ============================================================
 # Token Estimation
@@ -209,6 +221,7 @@ def package_handoff(
     mention_content: str,
     tool_events: list[dict],
     budget_tokens: int = HANDOFF_BUDGET_TOKENS,
+    agent_a_name: str = "Knowledge Agent",
 ) -> list[BaseMessage]:
     """
     为 A2A 交接组装结构化上下文包。
@@ -219,6 +232,7 @@ def package_handoff(
       3. Agent A 的结论 — 上限 50% 预算
       4. 需要 Review 的观点 — 始终包含
 
+    agent_a_name: 触发 handoff 的 Agent 显示名，用于 Section 3 header。
     tool_events 格式：[{"type": "tool_end", "name": "...", "result": "..."}, ...]
 
     返回 [HumanMessage(content=formatted_package)]。
@@ -262,7 +276,7 @@ def package_handoff(
         eff_budget = min(conclusion_budget, max(0, remaining - 100))
         if eff_budget > 0:
             trimmed = _truncate_by_tokens(conclusion, eff_budget)
-            sections.append(f"\n\n## Knowledge Agent 的分析\n{trimmed}")
+            sections.append(f"\n\n## {agent_a_name} 的分析\n{trimmed}")
             used += estimate_tokens(trimmed)
 
     # ── Section 4: 需要 Review 的观点（必含） ──

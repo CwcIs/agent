@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, onUnmounted, computed } from "vue";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 
 const TAG_AGENT_MAP: Record<string, string> = {
   review: "review",
@@ -28,6 +29,11 @@ function parseTag(text: string): { tag: string; label: string } | null {
 }
 
 marked.setOptions({ breaks: true });
+
+function renderMarkdown(text: string): string {
+  const raw = marked.parse(text) as string;
+  return DOMPurify.sanitize(raw);
+}
 
 interface ToolCall {
   name: string;
@@ -325,7 +331,10 @@ onUnmounted(() => {
                 msg.agentId === 'review' ? 'text-amber-500' : msg.agentId === 'brain' ? 'text-purple-500' : 'text-emerald-600'
               ]"
             >{{ msg.agentId }}</div>
-            <div v-if="msg.role === 'assistant'" class="prose prose-invert prose-sm max-w-none" v-html="marked.parse(msg.content) + (!msg.done ? '<span class=\'inline-block w-0.5 h-3.5 bg-gray-400 ml-0.5 animate-pulse align-text-bottom\'></span>' : '')"></div>
+            <div v-if="msg.role === 'assistant'" class="prose prose-invert prose-sm max-w-none">
+              <span v-html="renderMarkdown(msg.content)"></span>
+              <span v-if="!msg.done" class="inline-block w-0.5 h-3.5 bg-gray-400 ml-0.5 animate-pulse align-text-bottom"></span>
+            </div>
             <div v-else class="whitespace-pre-wrap">{{ msg.content }}</div>
 
             <!-- 工具调用内联卡片 -->

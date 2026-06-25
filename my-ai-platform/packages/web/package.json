@@ -9,12 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "dompurify": "^3.4.11",
     "marked": "^18.0.5",
     "pinia": "^2.0.0",
     "vue": "^3.5.0"
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.20",
+    "@types/dompurify": "^3.0.5",
     "@vitejs/plugin-vue": "^5.0.0",
     "autoprefixer": "^10.0.0",
     "postcss": "^8.0.0",

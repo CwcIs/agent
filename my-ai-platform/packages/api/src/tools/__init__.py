@@ -26,6 +26,15 @@ from langchain_core.tools import tool
 from src.lib.embeddings import upsert_embedding, search_similar
 
 
+# 持有后台任务引用，防止被 GC 取消导致 embedding 静默丢失
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _task_done_callback(task: asyncio.Task) -> None:
+    """任务完成后从集合中移除引用。"""
+    _background_tasks.discard(task)
+
+
 async def _background_embed(conn: sqlite3.Connection, note_id: str, title: str, content: str) -> None:
     """后台异步写入向量 embedding，失败静默忽略。"""
     try:
@@ -71,23 +80,28 @@ def make_tools(conn: sqlite3.Connection) -> list:
 
         # fallback：FTS5 关键词检索
         if not results:
-            rows = conn.execute(
-                """
-                SELECT n.id, n.title, n.content, n.tags_json, n.created_at
-                FROM notes_fts f
-                JOIN notes n ON n.rowid = f.rowid
-                WHERE notes_fts MATCH ?
-                  AND n.status = 'live'
-                  AND n.deleted_at IS NULL
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (query, k),
-            ).fetchall()
-            for r in rows:
-                d = dict(r)
-                d["tags"] = json.loads(d.pop("tags_json", "[]"))
-                results.append(d)
+            # 转义 FTS5 特殊字符（双引号加倍 + 包裹），避免 OperationalError
+            escaped = '"' + query.replace('"', '""') + '"'
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT n.id, n.title, n.content, n.tags_json, n.created_at
+                    FROM notes_fts f
+                    JOIN notes n ON n.rowid = f.rowid
+                    WHERE notes_fts MATCH ?
+                      AND n.status = 'live'
+                      AND n.deleted_at IS NULL
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (escaped, k),
+                ).fetchall()
+                for r in rows:
+                    d = dict(r)
+                    d["tags"] = json.loads(d.pop("tags_json", "[]"))
+                    results.append(d)
+            except Exception:
+                pass
 
         return json.dumps(results, ensure_ascii=False)
 
@@ -109,7 +123,9 @@ def make_tools(conn: sqlite3.Connection) -> list:
         )
         conn.commit()
         # 后台异步写入 embedding，不阻塞 save_note 返回
-        asyncio.create_task(_background_embed(conn, note_id, title, content))
+        task = asyncio.create_task(_background_embed(conn, note_id, title, content))
+        _background_tasks.add(task)
+        task.add_done_callback(_task_done_callback)
         return json.dumps({"status": "ok", "id": note_id, "title": title}, ensure_ascii=False)
 
     @tool

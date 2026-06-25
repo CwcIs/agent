@@ -22,7 +22,7 @@ from typing import AsyncGenerator
 
 from src.agent.registry import get_agent
 from src.agent.worklist import mark_done as wl_mark_done, mark_failed as wl_mark_failed
-from src.context.assemble import package_handoff
+from src.context.assemble import package_handoff, agent_display_name
 
 
 def _save_message(conn: sqlite3.Connection, session_id: str, agent_id: str, role: str, content: str) -> None:
@@ -44,6 +44,7 @@ async def _run_one_agent(
     conn: sqlite3.Connection | None = None,
     work_id: str = "",
     prompt_version: str = "v1",
+    agent_a_id: str = "",
 ) -> None:
     """
     在独立 task 中运行一个 Agent，把事件推入共享队列。
@@ -70,6 +71,7 @@ async def _run_one_agent(
             agent_a_full_output=agent_a_output,
             mention_content=content,
             tool_events=tool_events,
+            agent_a_name=agent_display_name(agent_a_id) if agent_a_id else "Knowledge Agent",
         )
 
         config = {
@@ -116,6 +118,7 @@ async def orchestrate_parallel(
     conn: sqlite3.Connection | None = None,
     worklist_ids: list[str] | None = None,
     prompt_version: str = "v1",
+    agent_a_id: str = "",
 ) -> AsyncGenerator[dict, None]:
     """
     并行 fan-out：把多个 mention 目标 Agent 同时跑起来，interleave 输出。
@@ -129,6 +132,7 @@ async def orchestrate_parallel(
       conn                — 数据库连接（用于持久化 assistant 回复 + worklist 状态）
       worklist_ids        — 每个 mention 对应的 worklist id（与 mentions 顺序一致）
       prompt_version      — prompt 版本标识
+      agent_a_id          — 触发 fan-out 的 Agent id（用于交接包 header 标注）
 
     产出：SSE-ready 事件 dict，与 BaseAgent.astream 格式相同。
           每个事件都带 agentId 字段，前端按 agentId 区分来源。
@@ -152,6 +156,7 @@ async def orchestrate_parallel(
                 conn=conn,
                 work_id=wids[i],
                 prompt_version=prompt_version,
+                agent_a_id=agent_a_id,
             )
         )
         for i, (agent_id, content) in enumerate(mentions)

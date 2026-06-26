@@ -35,13 +35,15 @@ class BaseAgent(ABC):
         self.conn = conn
         self._session_id = ""
         self._prompt_version = "v1"
+        self._trace_id = ""
         self._tools = self._make_tools()
         self._graph = self._build_graph()
 
-    def set_runtime_context(self, session_id: str, prompt_version: str = "v1") -> None:
+    def set_runtime_context(self, session_id: str, prompt_version: str = "v1", trace_id: str = "") -> None:
         """设置当前请求的运行时上下文，call_llm 需要这些来记账和预算检查。"""
         self._session_id = session_id
         self._prompt_version = prompt_version
+        self._trace_id = trace_id
 
     @abstractmethod
     def _make_tools(self) -> list:
@@ -61,6 +63,7 @@ class BaseAgent(ABC):
                 conn=self.conn,
                 session_id=self._session_id,
                 prompt_version=self._prompt_version,
+                trace_id=self._trace_id,
             )
             return {"messages": [response]}
 

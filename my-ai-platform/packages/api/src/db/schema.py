@@ -196,4 +196,11 @@ def init_db(conn: sqlite3.Connection) -> None:
     except Exception:
         pass  # 列已存在
 
+    # ── 迁移：llm_calls 增加 trace_id 列（Trace 面板） ──
+    try:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_trace ON llm_calls(trace_id)")
+    except Exception:
+        pass  # 列已存在
+
     conn.commit()

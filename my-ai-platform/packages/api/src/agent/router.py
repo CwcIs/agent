@@ -61,6 +61,7 @@ async def route_serial(
     session_id: str,
     conn: sqlite3.Connection | None = None,
     prompt_version: str = "v1",
+    trace_id: str = "",
 ) -> AsyncGenerator[dict, None]:
     """
     主路由循环：
@@ -113,7 +114,7 @@ async def route_serial(
                 "recursion_limit": 10,
             }
 
-            agent.set_runtime_context(session_id, prompt_version)
+            agent.set_runtime_context(session_id, prompt_version, trace_id)
 
             resume_text = ""
             try:
@@ -174,7 +175,7 @@ async def route_serial(
             "recursion_limit": 10,
         }
 
-        agent.set_runtime_context(session_id, prompt_version)
+        agent.set_runtime_context(session_id, prompt_version, trace_id)
 
         full_text = ""
         tool_events: list[dict] = []  # 收集工具调用事件，用于后续 context-transport
@@ -284,6 +285,7 @@ async def route_serial(
                 worklist_ids=parallel_wids if parallel_wids else None,
                 prompt_version=prompt_version,
                 agent_a_id=agent_id,
+                trace_id=trace_id,
             ):
                 yield event
             break  # 并行 branches 结束后不继续串行链路
@@ -306,4 +308,4 @@ async def route_serial(
             queue.append((next_agent_id, handoff_msgs, wid))
         depth += 1
 
-    yield {"type": "done", "session_id": session_id}
+    yield {"type": "done", "session_id": session_id, "trace_id": trace_id}

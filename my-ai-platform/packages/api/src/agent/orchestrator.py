@@ -45,6 +45,7 @@ async def _run_one_agent(
     work_id: str = "",
     prompt_version: str = "v1",
     agent_a_id: str = "",
+    trace_id: str = "",
 ) -> None:
     """
     在独立 task 中运行一个 Agent，把事件推入共享队列。
@@ -81,7 +82,7 @@ async def _run_one_agent(
             "recursion_limit": 10,
         }
 
-        agent.set_runtime_context(session_id, prompt_version)
+        agent.set_runtime_context(session_id, prompt_version, trace_id)
 
         full_text = ""
         async for event in agent.astream(messages, config):
@@ -119,6 +120,7 @@ async def orchestrate_parallel(
     worklist_ids: list[str] | None = None,
     prompt_version: str = "v1",
     agent_a_id: str = "",
+    trace_id: str = "",
 ) -> AsyncGenerator[dict, None]:
     """
     并行 fan-out：把多个 mention 目标 Agent 同时跑起来，interleave 输出。
@@ -157,6 +159,7 @@ async def orchestrate_parallel(
                 work_id=wids[i],
                 prompt_version=prompt_version,
                 agent_a_id=agent_a_id,
+                trace_id=trace_id,
             )
         )
         for i, (agent_id, content) in enumerate(mentions)

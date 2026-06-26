@@ -60,6 +60,7 @@ async def chat_stream(
         return EventSourceResponse(empty_gen())
 
     sid = session_id or str(uuid.uuid4())
+    tid = str(uuid.uuid4())  # trace_id — 贯穿本次请求所有 LLM 调用
 
     async def event_generator():
         # 每个 SSE 流创建独立连接，避免多流并发写同一连接导致 database is locked
@@ -67,7 +68,7 @@ async def chat_stream(
         stream_conn = new_conn()
         from src.agent.router import route_serial
         try:
-            async for event in route_serial(input, sid, conn=stream_conn, prompt_version=prompt_version):
+            async for event in route_serial(input, sid, conn=stream_conn, prompt_version=prompt_version, trace_id=tid):
                 etype = event.get("type")
 
                 if etype == "token":
@@ -112,7 +113,7 @@ async def chat_stream(
                     }
 
                 elif etype == "done":
-                    yield {"event": "done", "data": json.dumps({"session_id": sid})}
+                    yield {"event": "done", "data": json.dumps({"session_id": sid, "trace_id": event.get("trace_id", "")})}
 
                 elif etype == "error":
                     yield {"event": "error", "data": event.get("message", "unknown error")}
@@ -277,6 +278,31 @@ async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
     result["anomalies"] = patterns["anomalies"]
     _cache_digest(conn, today, result)
     return result
+
+
+# ── GET /trace/{trace_id} ────────────────────────────────────
+@router.get("/trace/{trace_id}")
+def get_trace(trace_id: str, conn: sqlite3.Connection = Depends(get_conn)):
+    rows = conn.execute(
+        "SELECT id, session_id, model, input_tokens, output_tokens, "
+        "cost_usd, latency_ms, status, created_at "
+        "FROM llm_calls WHERE trace_id = ? ORDER BY created_at ASC",
+        (trace_id,),
+    ).fetchall()
+    calls = [dict(r) for r in rows]
+    total_tokens = sum(c["input_tokens"] + c["output_tokens"] for c in calls)
+    total_cost = sum(c["cost_usd"] for c in calls)
+    total_ms = sum(c["latency_ms"] for c in calls)
+    return {
+        "trace_id": trace_id,
+        "calls": calls,
+        "summary": {
+            "total_tokens": total_tokens,
+            "total_cost_usd": round(total_cost, 6),
+            "total_latency_ms": total_ms,
+            "call_count": len(calls),
+        },
+    }
 
 
 def _cache_digest(conn: sqlite3.Connection, today: str, payload: dict) -> None:

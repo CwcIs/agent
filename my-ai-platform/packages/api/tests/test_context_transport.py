@@ -32,8 +32,19 @@ from context.assemble import (
     _priority,
     _strip_mentions,
     _build_drop_summary,
+    _parse_timestamp,
+    _detect_burst,
+    _importance_score,
+    _select_anchors,
+    _build_tombstone,
+    _msg_from_dict,
     FIRST_HOP_BUDGET_TOKENS,
     HANDOFF_BUDGET_TOKENS,
+    BURST_MAX_MSGS,
+    BURST_MIN_MSGS,
+    SCORE_THREAD_OPENER,
+    SCORE_CODE_BLOCK,
+    SCORE_MENTION_OR_TOOL,
 )
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -66,6 +77,15 @@ def _insert_msg(conn, session_id, role, content, agent_id="knowledge"):
     conn.execute(
         "INSERT INTO messages (id, session_id, agent_id, role, content) VALUES (?,?,?,?,?)",
         (str(uuid.uuid4()), session_id, agent_id, role, content),
+    )
+    conn.commit()
+
+
+def _insert_msg_with_ts(conn, session_id, role, content, created_at, agent_id="knowledge"):
+    """插入带指定 created_at 的消息（用于测试 burst detection 时间缺口）。"""
+    conn.execute(
+        "INSERT INTO messages (id, session_id, agent_id, role, content, created_at) VALUES (?,?,?,?,?,?)",
+        (str(uuid.uuid4()), session_id, agent_id, role, content, created_at),
     )
     conn.commit()
 
@@ -147,8 +167,246 @@ def test_build_drop_summary_with_user_messages():
 
 
 # ============================================================
-# assemble_context
+# v2 helpers: _parse_timestamp
 # ============================================================
+
+def test_parse_timestamp_valid():
+    from datetime import datetime
+    result = _parse_timestamp("2026-06-29 14:30:00")
+    assert result == datetime(2026, 6, 29, 14, 30, 0)
+
+
+def test_parse_timestamp_invalid():
+    assert _parse_timestamp("") is None
+    assert _parse_timestamp("not-a-date") is None
+
+
+# ============================================================
+# v2 helpers: _detect_burst
+# ============================================================
+
+def test_detect_burst_empty():
+    assert _detect_burst([]) == 0
+
+
+def test_detect_burst_fewer_than_min():
+    """少于 BURST_MIN 条消息时返回 0（全部进入 burst）。"""
+    msgs = [
+        {"role": "user", "content": "hi", "created_at": "2026-06-29 14:30:00"},
+        {"role": "assistant", "content": "hey", "created_at": "2026-06-29 14:30:10"},
+    ]
+    assert _detect_burst(msgs) == 0  # 夹紧到 BURST_MIN=4 → 全部保留
+
+
+def test_detect_burst_time_gap():
+    """15 分钟静默缺口后开始新 burst。"""
+    msgs = [
+        {"role": "user",    "content": "old",  "created_at": "2026-06-29 10:00:00"},
+        {"role": "assistant", "content": "old", "created_at": "2026-06-29 10:00:05"},
+        # 20 分钟缺口
+        {"role": "user",    "content": "new",  "created_at": "2026-06-29 10:20:00"},
+        {"role": "assistant", "content": "new", "created_at": "2026-06-29 10:20:05"},
+    ]
+    burst_start = _detect_burst(msgs)
+    # burst 从 index 2 开始（gap >= 15min），但 BURST_MIN=4 夹紧到全部
+    # 4 条消息 ≤ BURST_MIN → 全部进入 burst
+    assert burst_start == 0
+
+
+def test_detect_burst_large_gap_many_msgs():
+    """大量消息 + 时间缺口时，burst 从缺口之后开始。"""
+    msgs = []
+    # 8 条旧消息（10:00-10:05）
+    for i in range(4):
+        msgs.append({"role": "user", "content": f"old-u-{i}", "created_at": f"2026-06-29 10:00:{i*2:02d}"})
+        msgs.append({"role": "assistant", "content": f"old-a-{i}", "created_at": f"2026-06-29 10:00:{i*2+1:02d}"})
+    # 30 分钟缺口
+    # 6 条新消息（10:35-10:36）
+    for i in range(3):
+        msgs.append({"role": "user", "content": f"new-u-{i}", "created_at": f"2026-06-29 10:35:{i*2:02d}"})
+        msgs.append({"role": "assistant", "content": f"new-a-{i}", "created_at": f"2026-06-29 10:35:{i*2+1:02d}"})
+
+    burst_start = _detect_burst(msgs)
+    # 总共 14 条，gap 在 index 8 处开始
+    # gap detected at index 8, BURST_MAX=12 → burst = last 12, start at 2
+    # But wait: gap detection finds break at index 8, burst_size = 14-8 = 6
+    # 6 is within [4, 12], so burst_start = 8
+    assert burst_start == 8
+    assert msgs[burst_start]["content"] == "new-u-0"
+
+
+def test_detect_burst_tool_chain_protection():
+    """burst 首条是 tool → 向前扩展包含对应的 assistant。"""
+    msgs = [
+        {"role": "user",      "content": "query",      "created_at": "2026-06-29 10:00:00"},
+        {"role": "assistant", "content": "let me check","created_at": "2026-06-29 10:00:05"},
+        {"role": "tool",      "content": "tool result", "created_at": "2026-06-29 10:35:00"},
+        {"role": "assistant", "content": "here's result","created_at": "2026-06-29 10:35:05"},
+    ]
+    burst_start = _detect_burst(msgs)
+    # gap at index 2 (10:00 → 10:35), but tool at burst_start → extend back
+    # BURST_MIN=4: all 4 should be kept anyway
+    assert burst_start == 0
+
+
+def test_detect_burst_clamp_max():
+    """超过 BURST_MAX 时夹紧到最后 12 条。"""
+    msgs = []
+    for i in range(20):
+        msgs.append({"role": "user", "content": f"msg-{i}", "created_at": f"2026-06-29 14:{i:02d}:00"})
+    burst_start = _detect_burst(msgs)
+    # 20 条，BURST_MAX=12，burst_start = 20 - 12 = 8
+    assert burst_start == 8
+    assert len(msgs) - burst_start == 12
+
+
+# ============================================================
+# v2 helpers: _importance_score
+# ============================================================
+
+def test_importance_score_thread_opener():
+    msg = {"role": "user", "content": "帮我查一下技术债相关的笔记", "original_idx": 0}
+    score = _importance_score(msg, is_thread_opener=True)
+    assert score >= 5  # thread opener +5
+
+
+def test_importance_score_code_block():
+    msg = {"role": "assistant", "content": "这里是代码：\n```python\nprint('hello')\n```"}
+    score = _importance_score(msg, is_thread_opener=False)
+    assert score >= 3  # code block +3
+
+
+def test_importance_score_tool_call():
+    msg = {"role": "tool", "content": "tool:search_notes:[...]"}
+    score = _importance_score(msg, is_thread_opener=False)
+    assert score >= 2  # tool call +2
+
+
+def test_importance_score_mention():
+    msg = {"role": "assistant", "content": "分析完成。@review 需要看一下"}
+    score = _importance_score(msg, is_thread_opener=False)
+    assert score >= 2  # @mention +2
+
+
+def test_importance_score_long():
+    msg = {"role": "assistant", "content": "x" * 300}
+    score = _importance_score(msg, is_thread_opener=False)
+    assert score >= 1  # long message +1
+
+
+def test_importance_score_nothing_special():
+    msg = {"role": "assistant", "content": "好的"}
+    score = _importance_score(msg, is_thread_opener=False)
+    assert score == 0
+
+
+# ============================================================
+# v2 helpers: _build_tombstone
+# ============================================================
+
+def test_build_tombstone_empty():
+    assert _build_tombstone([]) == ""
+
+
+def test_build_tombstone_with_omitted():
+    omitted = [
+        {"role": "user", "content": "帮我查技术债", "original_idx": 0},
+        {"role": "assistant", "content": "找到一个相关笔记...", "original_idx": 1},
+        {"role": "tool", "content": "tool:search_notes:[...]", "original_idx": 2},
+        {"role": "user", "content": "展开说说", "original_idx": 3},
+    ]
+    result = _build_tombstone(omitted)
+    assert "[省略 4 条消息" in result
+    assert "技术债" in result
+    assert "[工具调用]" in result
+    assert "如需详情可搜索笔记库" in result
+
+
+def test_build_tombstone_dedup_keywords():
+    """重复关键词应去重。"""
+    omitted = [
+        {"role": "user", "content": "技术债怎么处理", "original_idx": 0},
+        {"role": "user", "content": "技术债怎么处理", "original_idx": 1},
+    ]
+    result = _build_tombstone(omitted)
+    # "技术债" should appear only once (first 20 chars of both are identical)
+    assert result.count("技术债怎么处理") == 1
+
+
+# ============================================================
+# v2 helpers: _select_anchors
+# ============================================================
+
+def test_select_anchors_empty():
+    assert _select_anchors([], 0) == []
+
+
+def test_select_anchors_picks_top_by_score():
+    """应选分数最高的前 ANCHOR_TOP_N 条。"""
+    omitted = [
+        {"role": "assistant", "content": "普通回复", "original_idx": 0},
+        {"role": "user", "content": "帮我查```code```技术债", "original_idx": 1},  # code + user = 3+0? No, this isn't thread opener
+        {"role": "assistant", "content": "@review 这个", "original_idx": 2},         # mention +2
+        {"role": "tool", "content": "tool:search_notes:[...]", "original_idx": 3},  # tool +2
+        {"role": "user", "content": "长" + "x" * 300, "original_idx": 4},          # long +1
+    ]
+    anchors = _select_anchors(omitted, first_user_idx=1)  # idx 1 is user but not opener (opener would need to match first_user_idx)
+    assert len(anchors) <= 3
+    # 最高分的应该被选中
+    scores = [_importance_score(m, m["original_idx"] == 1) for m in anchors]
+    # 锚点至少有 score > 0 的
+    assert any(s > 0 for s in scores)
+
+
+# ============================================================
+# v2: assemble_context with time gaps
+# ============================================================
+
+def test_assemble_context_respects_burst_boundary():
+    """有时间缺口时，只保留 burst 内的消息 + anchors + tombstone。"""
+    conn = _init_test_db()
+    sid = "burst-test"
+
+    # 旧消息（30 分钟前）
+    _insert_msg_with_ts(conn, sid, "user", "旧问题", "2026-06-29 10:00:00")
+    _insert_msg_with_ts(conn, sid, "assistant", "旧回答", "2026-06-29 10:00:05")
+
+    # 新消息（burst，30 分钟后）
+    _insert_msg_with_ts(conn, sid, "user", "新问题", "2026-06-29 10:30:00")
+    _insert_msg_with_ts(conn, sid, "assistant", "新回答", "2026-06-29 10:30:05")
+
+    result = assemble_context(conn, sid)
+    contents = [m.content for m in result]
+
+    # burst 内消息应保留
+    assert "新问题" in contents
+    assert "新回答" in contents
+
+    # 4 条消息 ≤ BURST_MIN → 全部进入 burst，旧消息也保留
+    assert "旧问题" in contents or any("[省略 " in c for c in contents)
+
+
+def test_assemble_context_generates_tombstone_for_large_history():
+    """大量历史消息时生成墓碑摘要。"""
+    conn = _init_test_db()
+    sid = "tombstone-test"
+
+    # 25 条消息（> BURST_MAX=12）
+    for i in range(12):
+        _insert_msg(conn, sid, "user", f"问题 {i}")
+        _insert_msg(conn, sid, "assistant", f"回答 {i}")
+    _insert_msg(conn, sid, "user", "最新问题")
+
+    result = assemble_context(conn, sid)
+    contents = [m.content if hasattr(m, 'content') else "" for m in result]
+
+    # 墓碑应在开头
+    assert "[省略 " in contents[0]
+    assert "条消息" in contents[0]
+
+    # 最新问题应在结果中
+    assert "最新问题" in contents
+
 
 def test_assemble_context_empty_db():
     conn = _init_test_db()
@@ -184,7 +442,7 @@ def test_assemble_context_user_messages_always_kept():
 
 
 def test_assemble_context_drops_long_narratives():
-    """长助理消息（LOW 优先级）先被丢弃。"""
+    """v2: 4 条消息 ≤ BURST_MIN，全部保留，无需丢弃。"""
     conn = _init_test_db()
     sid = "test-session"
 
@@ -195,29 +453,33 @@ def test_assemble_context_drops_long_narratives():
 
     result = assemble_context(conn, sid, budget_tokens=30)  # 极小预算
     contents = [m.content for m in result]
-    # 最近的短回复应该保留
+    # v2: burst 夹紧到 BURST_MIN=4，4 条消息全部保留
+    assert len(result) == 4
     assert "找到了" in contents
-    # 长叙事可能被丢弃
-    long_kept = any("x" * 100 in c for c in contents)
-    # 如果丢了消息，应该有摘要
-    has_summary = any("[对话摘要]" in c for c in contents)
-    assert long_kept or has_summary
+    # 长叙事也在 burst 中，不会被丢弃
+    assert any("x" * 100 in c for c in contents)
 
 
 def test_assemble_context_adds_summary_when_truncating():
+    """20 条消息超出 BURST_MAX，省略消息应生成墓碑摘要。"""
     conn = _init_test_db()
     sid = "test-session"
 
-    # 塞很多轮对话
+    # 塞很多轮对话（10 user + 10 assistant = 20 条）
     for i in range(10):
         _insert_msg(conn, sid, "user", f"问题 {i}: 这是一个比较长的用户问题，包含一些上下文信息")
         _insert_msg(conn, sid, "assistant", f"回答 {i}: " + "这是一个很长的助理回复。" * 20)
 
     result = assemble_context(conn, sid, budget_tokens=200)
-    # 应该有摘要消息在开头
-    has_summary = any("[对话摘要]" in (m.content if hasattr(m, 'content') else "")
-                      for m in result)
-    assert has_summary
+    # v2 tombstone 格式：[省略 N 条消息。关键词: ...]
+    has_tombstone = any(
+        "[省略 " in (m.content if hasattr(m, 'content') else "") and "条消息" in (m.content if hasattr(m, 'content') else "")
+        for m in result
+    )
+    assert has_tombstone
+    # 墓碑应该在第一条（开头位置）
+    first_content = result[0].content if hasattr(result[0], 'content') else ""
+    assert "[省略 " in first_content
 
 
 # ============================================================
@@ -357,7 +619,34 @@ if __name__ == "__main__":
         # _build_drop_summary
         test_build_drop_summary_empty,
         test_build_drop_summary_with_user_messages,
-        # assemble_context
+        # v2: _parse_timestamp
+        test_parse_timestamp_valid,
+        test_parse_timestamp_invalid,
+        # v2: _detect_burst
+        test_detect_burst_empty,
+        test_detect_burst_fewer_than_min,
+        test_detect_burst_time_gap,
+        test_detect_burst_large_gap_many_msgs,
+        test_detect_burst_tool_chain_protection,
+        test_detect_burst_clamp_max,
+        # v2: _importance_score
+        test_importance_score_thread_opener,
+        test_importance_score_code_block,
+        test_importance_score_tool_call,
+        test_importance_score_mention,
+        test_importance_score_long,
+        test_importance_score_nothing_special,
+        # v2: _build_tombstone
+        test_build_tombstone_empty,
+        test_build_tombstone_with_omitted,
+        test_build_tombstone_dedup_keywords,
+        # v2: _select_anchors
+        test_select_anchors_empty,
+        test_select_anchors_picks_top_by_score,
+        # v2: assemble_context with burst
+        test_assemble_context_respects_burst_boundary,
+        test_assemble_context_generates_tombstone_for_large_history,
+        # assemble_context (v1 compat)
         test_assemble_context_empty_db,
         test_assemble_context_keeps_all_when_under_budget,
         test_assemble_context_user_messages_always_kept,

@@ -15,11 +15,12 @@
 #   assemble_context()   — 第一个 Agent 启动前，从 DB 按优先级组装历史
 #   package_handoff()     — Agent A → Agent B 交接时，组装结构化上下文包
 #
-# 核心改进（vs Phase 1 的 naive LIMIT 20）：
-#   1. 用户消息 HIGH 优先级，永不被裁剪
-#   2. 长叙事助理消息 LOW 优先级，先被丢弃
-#   3. 被丢弃的消息生成一句话摘要，不让 Agent B 完全失明
-#   4. A2A 交接包包含：用户意图 + 工具结果 + Agent A 结论 + review 观点
+# assemble_context() 三阶段算法（v2 升级）：
+#   Phase 1 — Burst Detection：从最新消息往回找 >=15 分钟静默缺口，
+#             保证最近一个对话 burst 完整保留（最多 12 条，最少 4 条）。
+#             语义链保护：burst 首条若为 tool 消息，向前扩展包含对应 assistant。
+#   Phase 2 — Anchor Selection：对省略消息做重要性评分，选 top 3 锚点。
+#   Phase 3 — Tombstone：对省略消息生成墓碑摘要，让 Agent 知道有信息被省略。
 #
 # 注意（MD §4.6）：
 #   sessionId + promptVersion 一起贯穿 → system prompt 拼接时带版本号
@@ -27,6 +28,7 @@
 
 import re
 import sqlite3
+from datetime import datetime
 from typing import Optional
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -34,11 +36,25 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 # ============================================================
 # Constants
 # ============================================================
-FIRST_HOP_BUDGET_TOKENS = 3000    # 第一个 Agent 的历史 token 上限
+
+FIRST_HOP_BUDGET_TOKENS = 3000    # 第一个 Agent 的历史 token 上限（保留兼容）
 HANDOFF_BUDGET_TOKENS = 1500      # A2A 交接包的 token 上限
 FACT_SECTION_BUDGET_RATIO = 0.4   # 事实段最多占 40% 预算
 CONCLUSION_SECTION_BUDGET_RATIO = 0.5  # 结论段最多占 50% 预算
 SHORT_MSG_THRESHOLD = 200          # 短消息阈值（字符数）
+
+# ── 三阶段算法常量 ──
+BURST_GAP_MINUTES = 15             # 静默缺口阈值（分钟）
+BURST_MAX_MSGS = 12                # burst 最大消息数
+BURST_MIN_MSGS = 4                 # burst 最小消息数
+ANCHOR_TOP_N = 3                   # 锚点选取数量
+LONG_MSG_CHARS = 200               # 长消息阈值（字符数，用于评分）
+
+# 重要性评分权重
+SCORE_THREAD_OPENER = 5            # 线程首条（用户第一句话）
+SCORE_CODE_BLOCK = 3               # 含代码块
+SCORE_MENTION_OR_TOOL = 2          # 含 @mention 或工具调用
+SCORE_LONG_MSG = 1                 # 消息 >200 字符
 
 # agent_id → 中文显示名
 _AGENT_DISPLAY_NAMES: dict[str, str] = {
@@ -76,11 +92,14 @@ def _estimate_message_tokens(msg: BaseMessage) -> int:
 
 
 # ============================================================
-# Message Priority Classification
+# Message Priority Classification (deprecated — replaced by burst + anchor)
 # ============================================================
 
 def _priority(msg: BaseMessage) -> str:
-    """判断消息保留优先级：HIGH > MEDIUM > LOW"""
+    """
+    [DEPRECATED] v1 优先级判断。v2 使用 burst detection + importance scoring 替代。
+    保留此函数以保证外部测试导入兼容。
+    """
     if isinstance(msg, HumanMessage):
         return "HIGH"
     if isinstance(msg, AIMessage):
@@ -95,11 +114,14 @@ def _priority(msg: BaseMessage) -> str:
 
 
 # ============================================================
-# Drop Summary
+# Drop Summary (deprecated — replaced by _build_tombstone)
 # ============================================================
 
 def _build_drop_summary(dropped: list[BaseMessage]) -> Optional[str]:
-    """为被丢弃的消息生成一句话摘要，让后续 Agent 不完全失明。"""
+    """
+    [DEPRECATED] v1 丢弃摘要。v2 使用 _build_tombstone() 替代。
+    保留此函数以保证外部测试导入兼容。
+    """
     if not dropped:
         return None
 
@@ -115,7 +137,161 @@ def _build_drop_summary(dropped: list[BaseMessage]) -> Optional[str]:
 
 
 # ============================================================
-# First-Hop History Assembly
+# Phase 1: Burst Detection
+# ============================================================
+
+def _parse_timestamp(ts_str: str) -> Optional[datetime]:
+    """解析 SQLite datetime 文本。无法解析时返回 None。"""
+    if not ts_str:
+        return None
+    try:
+        return datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _detect_burst(msgs: list[dict]) -> int:
+    """
+    从最新消息往回找第一个 >= BURST_GAP_MINUTES 分钟的静默缺口，
+    返回 burst 的起始 index（inclusive）。
+
+    Clamp 到 [BURST_MIN_MSGS, BURST_MAX_MSGS]。
+    语义链保护：如果 burst 首条是 tool 消息，向前扩展一行包含紧邻的 assistant。
+    """
+    n = len(msgs)
+    if n == 0:
+        return 0
+
+    # 从最新往回找静默缺口
+    burst_start = n - 1
+    gap_found = False
+    for i in range(n - 1, 0, -1):
+        curr_ts = _parse_timestamp(msgs[i].get("created_at", ""))
+        prev_ts = _parse_timestamp(msgs[i - 1].get("created_at", ""))
+        if curr_ts and prev_ts:
+            gap_seconds = (curr_ts - prev_ts).total_seconds()
+            if gap_seconds >= BURST_GAP_MINUTES * 60:
+                burst_start = i
+                gap_found = True
+                break
+
+    if not gap_found:
+        # 无静默缺口 → 整个对话是一个 burst（然后由 MAX 夹紧）
+        burst_start = 0
+
+    # Clamp 消息数
+    burst_size = n - burst_start
+    if burst_size > BURST_MAX_MSGS:
+        burst_start = n - BURST_MAX_MSGS
+    elif burst_size < BURST_MIN_MSGS:
+        burst_start = max(0, n - BURST_MIN_MSGS)
+
+    # 语义链保护：burst 首条是 tool → 向前扩到对应 assistant
+    if burst_start < n and msgs[burst_start]["role"] == "tool":
+        burst_start = max(0, burst_start - 1)
+
+    return burst_start
+
+
+# ============================================================
+# Phase 2: Importance Scoring & Anchor Selection
+# ============================================================
+
+def _importance_score(msg: dict, is_thread_opener: bool) -> int:
+    """对单条消息做重要性评分。"""
+    score = 0
+    content = msg.get("content", "")
+
+    if is_thread_opener:
+        score += SCORE_THREAD_OPENER
+    if "```" in content:
+        score += SCORE_CODE_BLOCK
+    if "@" in content or msg.get("role") == "tool":
+        score += SCORE_MENTION_OR_TOOL
+    if len(content) > LONG_MSG_CHARS:
+        score += SCORE_LONG_MSG
+
+    return score
+
+
+def _select_anchors(
+    omitted: list[dict],
+    first_user_idx: int | None,
+) -> list[dict]:
+    """从省略消息中选 top ANCHOR_TOP_N 条作为锚点。"""
+    if not omitted:
+        return []
+
+    scored = []
+    for i, msg in enumerate(omitted):
+        is_opener = (first_user_idx is not None
+                     and msg["original_idx"] == first_user_idx)
+        s = _importance_score(msg, is_opener)
+        scored.append((s, i, msg))
+
+    # 分数降序，同分时 index 升序（保持原始顺序的稳定 tie-break）
+    scored.sort(key=lambda x: (-x[0], x[1]))
+
+    return [item[2] for item in scored[:ANCHOR_TOP_N]]
+
+
+# ============================================================
+# Phase 3: Tombstone
+# ============================================================
+
+def _build_tombstone(omitted: list[dict]) -> str:
+    """
+    为被省略且未选为 anchor 的消息生成墓碑摘要。
+    格式：[省略 N 条消息。关键词: X, Y。如需详情可搜索笔记库]
+    """
+    if not omitted:
+        return ""
+
+    n = len(omitted)
+    keywords: list[str] = []
+
+    for msg in omitted:
+        content = msg.get("content", "")
+        if msg.get("role") == "user":
+            kw = content[:20].strip()
+            if kw:
+                keywords.append(kw)
+        elif msg.get("role") == "tool":
+            keywords.append("[工具调用]")
+
+    # 去重，取前 5
+    seen: set[str] = set()
+    unique_kw: list[str] = []
+    for kw in keywords:
+        if kw not in seen:
+            seen.add(kw)
+            unique_kw.append(kw)
+    unique_kw = unique_kw[:5]
+
+    kw_str = "、".join(unique_kw) if unique_kw else "对话"
+    return f"[省略 {n} 条消息。关键词: {kw_str}。如需详情可搜索笔记库]"
+
+
+# ============================================================
+# Message Conversion
+# ============================================================
+
+def _msg_from_dict(m: dict) -> BaseMessage:
+    """将 DB row dict 转换为 LangChain 消息对象。"""
+    role = m["role"]
+    content = m["content"]
+    if role == "user":
+        return HumanMessage(content=content)
+    elif role == "assistant":
+        return AIMessage(content=content)
+    elif role == "tool":
+        # tool 消息前缀标注，方便 Agent 理解
+        return AIMessage(content=f"[工具结果] {content}")
+    return AIMessage(content=content)
+
+
+# ============================================================
+# First-Hop History Assembly (v2 — 三阶段算法)
 # ============================================================
 
 def assemble_context(
@@ -124,21 +300,30 @@ def assemble_context(
     budget_tokens: int = FIRST_HOP_BUDGET_TOKENS,
 ) -> list[BaseMessage]:
     """
-    从 DB 加载对话历史，按优先级 + token 预算裁剪。
+    从 DB 加载对话历史，三阶段智能裁剪。
 
-    算法：
-      1. 从 messages 表按时间正序取当前 session 的所有消息
-      2. 反向遍历（从最新到最旧），按优先级填充 token 预算
-      3. HIGH（用户消息）永不被裁剪；MEDIUM 填满预算；LOW 先被丢弃
-      4. 如果丢了消息，在开头插入一句话摘要
+    Phase 1 — Burst Detection:
+      从最新消息往回找 >=15 分钟静默缺口，保证最近一个对话 burst
+      完整保留（最多 12 条，最少 4 条）。
+      语义链保护：burst 首条若是 tool 消息，向前扩到对应 assistant。
 
-    返回 LangChain 消息列表（不包含当前用户输入，由 router 追加）。
+    Phase 2 — Anchor Selection:
+      对被省略的消息做重要性评分：
+        +5 线程首条 / +3 含代码块 / +2 含 @mention 或工具调用 / +1 >200 字符
+      选 top 3 作为锚点插入上下文。
+
+    Phase 3 — Tombstone:
+      对所有被省略的消息生成一条墓碑摘要：
+      "[省略 N 条消息。关键词: X, Y。如需详情可搜索笔记库]"
+
+    返回 LangChain 消息列表，按时间正序排列（不包含当前用户输入，由 router 追加）。
+    budget_tokens 参数保留兼容，三阶段算法通过 burst + anchor 数量天然控制体积。
     """
     if not conn:
         return []
 
     rows = conn.execute(
-        "SELECT role, content FROM messages "
+        "SELECT role, content, created_at FROM messages "
         "WHERE session_id = ? ORDER BY created_at ASC",
         (session_id,),
     ).fetchall()
@@ -146,42 +331,53 @@ def assemble_context(
     if not rows:
         return []
 
-    all_msgs: list[BaseMessage] = []
-    for role, content in rows:
-        if role == "user":
-            all_msgs.append(HumanMessage(content=content))
-        elif role == "assistant":
-            all_msgs.append(AIMessage(content=content))
-        elif role == "tool":
-            # tool 消息前缀标注，方便 Agent 理解
-            all_msgs.append(AIMessage(content=f"[工具结果] {content}"))
-        # 忽略其他 role
+    # ── 构建消息元数据列表 ──
+    all_msgs: list[dict] = []
+    first_user_idx: int | None = None
 
-    # 反向遍历，按优先级填充
-    kept: list[BaseMessage] = []
-    used = 0
-    dropped: list[BaseMessage] = []
+    for idx, (role, content, created_at) in enumerate(rows):
+        msg = {
+            "role": role,
+            "content": content,
+            "created_at": created_at,
+            "original_idx": idx,
+        }
+        all_msgs.append(msg)
 
-    for msg in reversed(all_msgs):
-        pri = _priority(msg)
-        cost = _estimate_message_tokens(msg)
+        if first_user_idx is None and role == "user":
+            first_user_idx = idx
 
-        if pri == "HIGH":
-            # 用户消息永远保留（携带意图和约束）
-            kept.insert(0, msg)
-            used += cost
-        elif used + cost <= budget_tokens:
-            kept.insert(0, msg)
-            used += cost
-        else:
-            dropped.insert(0, msg)
+    # ── Phase 1: Burst Detection ──
+    burst_start = _detect_burst(all_msgs)
+    burst_msgs = all_msgs[burst_start:]
+    omitted_msgs = all_msgs[:burst_start]
 
-    # 如果有消息被丢弃，在开头插入摘要
-    summary = _build_drop_summary(dropped)
-    if summary:
-        kept.insert(0, HumanMessage(content=f"[对话摘要] {summary}"))
+    # ── Phase 2: Anchor Selection ──
+    anchors = _select_anchors(omitted_msgs, first_user_idx) if omitted_msgs else []
 
-    return kept
+    # 被省略且未被选为 anchor 的消息 → 墓碑覆盖
+    anchor_set = set(id(m) for m in anchors)
+    tombstone_msgs = [m for m in omitted_msgs if id(m) not in anchor_set]
+
+    # ── Phase 3: Tombstone ──
+    tombstone = _build_tombstone(tombstone_msgs)
+
+    # ── 组装最终结果（时间正序） ──
+    result: list[BaseMessage] = []
+
+    if tombstone:
+        result.append(HumanMessage(content=tombstone))
+
+    # Anchors 按原始 index 排序
+    anchors.sort(key=lambda m: m["original_idx"])
+    for m in anchors:
+        result.append(_msg_from_dict(m))
+
+    # Burst 已经按时间正序（来自 DB ORDER BY created_at ASC）
+    for m in burst_msgs:
+        result.append(_msg_from_dict(m))
+
+    return result
 
 
 # ============================================================

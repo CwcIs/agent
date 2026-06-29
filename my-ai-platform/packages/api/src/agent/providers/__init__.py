@@ -16,14 +16,15 @@ import os
 from .deepseek import make_deepseek
 from .gpt import make_gpt
 from .gemini import make_gemini
+from .zhipu import make_zhipu
 
 logger = logging.getLogger(__name__)
 
 # agent_id → (provider_name, make_fn)
 _AGENT_MODEL_MAP: dict[str, tuple[str, object]] = {
     "knowledge": ("deepseek", make_deepseek),
-    "review":    ("gpt",      make_gpt),
-    "brain":     ("gemini",   make_gemini),
+    "review":    ("zhipu",   make_zhipu),
+    "brain":     ("gemini",  make_gemini),
 }
 
 _DEFAULT_PROVIDER = make_deepseek
@@ -35,6 +36,7 @@ def _check_provider_available(name: str) -> bool:
         "deepseek": "DEEPSEEK_API_KEY",
         "gpt":      "OPENAI_API_KEY",
         "gemini":   "GEMINI_API_KEY",
+        "zhipu":    "ZHIPU_API_KEY",
     }
     env_key = key_map.get(name)
     if env_key is None:

@@ -113,6 +113,10 @@ async def chat_stream(
                     }
 
                 elif etype == "done":
+                    # 跳过 BaseAgent.astream 发出的 agent 级别 done（无 trace_id），
+                    # 只透传 route_serial 的最终 done（携带完整 trace_id）
+                    if not event.get("trace_id"):
+                        continue
                     yield {"event": "done", "data": json.dumps({"session_id": sid, "trace_id": event.get("trace_id", "")})}
 
                 elif etype == "error":

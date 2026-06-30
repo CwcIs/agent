@@ -25,18 +25,20 @@ def save_handoff(
     agent_a_output: str,
     mention_content: str,
     tool_events: list[dict],
+    agent_a_id: str = "",
 ) -> str:
-    """持久化一个 pending A2A handoff，返回 worklist id。"""
+    """持久化一个 pending A2A handoff，返回 worklist id。agent_a_id 记录触发方。"""
     wid = str(uuid.uuid4())
     conn.execute(
         """INSERT INTO worklist
            (id, session_id, agent_id, depth, status,
-            user_input, agent_a_output, mention_content, tool_events_json)
-           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+            user_input, agent_a_output, mention_content, tool_events_json, agent_a_id)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)""",
         (
             wid, session_id, agent_id, depth,
             user_input, agent_a_output, mention_content,
             json.dumps(tool_events, ensure_ascii=False),
+            agent_a_id,
         ),
     )
     conn.commit()

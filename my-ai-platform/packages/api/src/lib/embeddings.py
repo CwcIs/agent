@@ -29,7 +29,7 @@ atexit.register(lambda: _embed_executor.shutdown(wait=False, cancel_futures=True
 @lru_cache(maxsize=1)
 def _get_model():
     from sentence_transformers import SentenceTransformer
-    return SentenceTransformer(MODEL_ID)
+    return SentenceTransformer(MODEL_ID, local_files_only=True)
 
 
 async def embed(text: str) -> List[float]:

@@ -39,6 +39,7 @@ def get_conn() -> sqlite3.Connection:
     conn.enable_load_extension(False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")  # 5s timeout to avoid "database is locked" under concurrent writes
     return conn
 
 
@@ -172,6 +173,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             agent_a_output  TEXT NOT NULL DEFAULT '',
             mention_content TEXT NOT NULL DEFAULT '',
             tool_events_json TEXT NOT NULL DEFAULT '[]',
+            agent_a_id      TEXT NOT NULL DEFAULT '',
             error_msg       TEXT,
             created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             updated_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
@@ -187,5 +189,18 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE daily_digests ADD COLUMN {col} TEXT NOT NULL DEFAULT '[]'")
         except Exception:
             pass  # 列已存在
+
+    # ── 迁移：worklist 增加 agent_a_id 列（package_handoff 动态 header） ──
+    try:
+        conn.execute("ALTER TABLE worklist ADD COLUMN agent_a_id TEXT NOT NULL DEFAULT ''")
+    except Exception:
+        pass  # 列已存在
+
+    # ── 迁移：llm_calls 增加 trace_id 列（Trace 面板） ──
+    try:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_trace ON llm_calls(trace_id)")
+    except Exception:
+        pass  # 列已存在
 
     conn.commit()

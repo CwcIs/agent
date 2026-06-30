@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, onUnmounted, computed } from "vue";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 
 const TAG_AGENT_MAP: Record<string, string> = {
   review: "review",
@@ -28,6 +29,11 @@ function parseTag(text: string): { tag: string; label: string } | null {
 }
 
 marked.setOptions({ breaks: true });
+
+function renderMarkdown(text: string): string {
+  const raw = marked.parse(text) as string;
+  return DOMPurify.sanitize(raw);
+}
 
 interface ToolCall {
   name: string;
@@ -64,6 +70,51 @@ const activeTag = computed(() => parseTag(input.value));
 const messagesEl = ref<HTMLElement | null>(null);
 let eventSource: EventSource | null = null;
 
+// ── Trace 面板 ──
+const traceId = ref<string | null>(null);
+const traceExpanded = ref(false);
+interface TraceCall {
+  id: string; session_id: string; model: string;
+  input_tokens: number; output_tokens: number;
+  cost_usd: number; latency_ms: number; status: string; created_at: string;
+}
+interface TraceData {
+  trace_id: string; calls: TraceCall[];
+  summary: { total_tokens: number; total_cost_usd: number; total_latency_ms: number; call_count: number };
+}
+const traceData = ref<TraceData | null>(null);
+const traceLoading = ref(false);
+
+async function fetchTrace() {
+  if (!traceId.value || traceLoading.value) return;
+  traceLoading.value = true;
+  try {
+    const res = await fetch(`/trace/${traceId.value}`);
+    if (res.ok) traceData.value = await res.json();
+  } catch { /* ignore */ }
+  finally { traceLoading.value = false; }
+}
+
+function toggleTrace() {
+  traceExpanded.value = !traceExpanded.value;
+  if (traceExpanded.value && !traceData.value) fetchTrace();
+}
+
+const AGENT_DISPLAY: Record<string, string> = { knowledge: "Knowledge Agent", review: "Review Agent", brain: "Brain Agent" };
+function guessAgent(model: string): string {
+  if (model.includes("deepseek")) return "knowledge";
+  if (model.includes("gpt")) return "review";
+  if (model.includes("gemini")) return "brain";
+  return "";
+}
+function formatMs(ms: number): string {
+  if (ms >= 1000) return (ms / 1000).toFixed(1) + "s";
+  return ms + "ms";
+}
+function formatCost(usd: number): string {
+  return "$" + usd.toFixed(4);
+}
+
 // 并行执行时各 Agent 的工具调用状态（agentId → 当前工具名）
 const agentToolStatus = ref<Record<string, string | null>>({});
 
@@ -92,6 +143,9 @@ function sendMessage() {
 
   messages.value.push({ role: "user", content: input.value, done: true });
   streaming.value = true;
+  traceId.value = null;
+  traceData.value = null;
+  traceExpanded.value = false;
   scrollBottom();
 
   const encoded = encodeURIComponent(input.value);
@@ -187,11 +241,15 @@ function sendMessage() {
     scrollBottom();
   });
 
-  eventSource.addEventListener("done", () => {
+  eventSource.addEventListener("done", (e) => {
     const last = messages.value[messages.value.length - 1];
     if (last) last.done = true;
     streaming.value = false;
     resetToolStatus();
+    try {
+      const data = JSON.parse(e.data);
+      if (data.trace_id) traceId.value = data.trace_id;
+    } catch { /* ignore */ }
     eventSource?.close();
   });
 
@@ -325,7 +383,10 @@ onUnmounted(() => {
                 msg.agentId === 'review' ? 'text-amber-500' : msg.agentId === 'brain' ? 'text-purple-500' : 'text-emerald-600'
               ]"
             >{{ msg.agentId }}</div>
-            <div v-if="msg.role === 'assistant'" class="prose prose-invert prose-sm max-w-none" v-html="marked.parse(msg.content) + (!msg.done ? '<span class=\'inline-block w-0.5 h-3.5 bg-gray-400 ml-0.5 animate-pulse align-text-bottom\'></span>' : '')"></div>
+            <div v-if="msg.role === 'assistant'" class="prose prose-invert prose-sm max-w-none">
+              <span v-html="renderMarkdown(msg.content)"></span>
+              <span v-if="!msg.done" class="inline-block w-0.5 h-3.5 bg-gray-400 ml-0.5 animate-pulse align-text-bottom"></span>
+            </div>
             <div v-else class="whitespace-pre-wrap">{{ msg.content }}</div>
 
             <!-- 工具调用内联卡片 -->
@@ -380,6 +441,92 @@ onUnmounted(() => {
           </div>
         </div>
       </template>
+    </div>
+
+    <!-- Trace 摘要条 -->
+    <div
+      v-if="traceId"
+      class="px-5 pb-2 shrink-0"
+    >
+      <div
+        class="rounded-lg border border-white/[0.06] bg-white/[0.02] overflow-hidden cursor-pointer select-none"
+        @click="toggleTrace"
+      >
+        <div class="flex items-center gap-2 px-3 py-2 text-xs">
+          <svg class="w-3 h-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+          <span class="text-gray-500 font-mono text-[11px]">trace {{ traceId.slice(0, 8) }}</span>
+          <template v-if="traceData">
+            <span class="text-gray-700">·</span>
+            <span class="text-gray-400">{{ traceData.summary.call_count }} calls</span>
+            <span class="text-gray-700">·</span>
+            <span class="text-gray-400">{{ traceData.summary.total_tokens.toLocaleString() }} tokens</span>
+            <span class="text-gray-700">·</span>
+            <span class="text-gray-400">{{ formatCost(traceData.summary.total_cost_usd) }}</span>
+            <span class="text-gray-700">·</span>
+            <span class="text-gray-400">{{ formatMs(traceData.summary.total_latency_ms) }}</span>
+          </template>
+          <template v-else>
+            <span v-if="traceLoading" class="text-gray-700 animate-pulse">loading...</span>
+          </template>
+          <svg
+            class="w-2.5 h-2.5 text-gray-700 ml-auto transition-transform shrink-0"
+            :class="{ 'rotate-180': traceExpanded }"
+            fill="none" stroke="currentColor" viewBox="0 0 24 24"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+
+        <!-- 展开详情 -->
+        <div v-if="traceExpanded && traceData" class="border-t border-white/[0.06]">
+          <div class="px-3 py-2 space-y-1.5">
+            <div
+              v-for="(call, ci) in traceData.calls"
+              :key="ci"
+              class="flex items-center gap-2 text-[11px]"
+            >
+              <!-- Agent badge -->
+              <span
+                :class="[
+                  'px-1.5 py-0.5 rounded font-mono text-[10px] shrink-0 min-w-[64px] text-center',
+                  guessAgent(call.model) === 'review'
+                    ? 'bg-amber-500/10 text-amber-400'
+                    : guessAgent(call.model) === 'brain'
+                      ? 'bg-purple-500/10 text-purple-400'
+                      : 'bg-emerald-500/10 text-emerald-400'
+                ]"
+              >{{ guessAgent(call.model) }}</span>
+
+              <!-- Model -->
+              <span class="text-gray-500 font-mono text-[10px] shrink-0">{{ call.model }}</span>
+
+              <!-- Tokens -->
+              <span class="text-gray-600">in:{{ call.input_tokens }} out:{{ call.output_tokens }}</span>
+
+              <!-- Latency -->
+              <span class="text-gray-500 ml-auto shrink-0">{{ formatMs(call.latency_ms) }}</span>
+
+              <!-- Status -->
+              <svg
+                v-if="call.status === 'ok'"
+                class="w-3 h-3 text-emerald-500 shrink-0"
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              >
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              <svg
+                v-else
+                class="w-3 h-3 text-red-400 shrink-0"
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              >
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 输入区 -->

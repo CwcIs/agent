@@ -43,19 +43,31 @@ function formatDate(s: string) {
 }
 
 async function archiveNote(note: Note) {
-  const newStatus = note.status === "archived" ? "live" : "archived";
-  await fetch(`/notes/${note.id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ status: newStatus }),
-  });
+  const prevStatus = note.status;
+  const newStatus = prevStatus === "archived" ? "live" : "archived";
   note.status = newStatus;
+  try {
+    const resp = await fetch(`/notes/${note.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: newStatus }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  } catch {
+    note.status = prevStatus; // 回滚
+  }
 }
 
 async function deleteNote(note: Note) {
   if (!confirm(`删除「${note.title}」？`)) return;
-  await fetch(`/notes/${note.id}`, { method: "DELETE" });
+  const prevNotes = notes.value;
   notes.value = notes.value.filter((n) => n.id !== note.id);
+  try {
+    const resp = await fetch(`/notes/${note.id}`, { method: "DELETE" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  } catch {
+    notes.value = prevNotes; // 回滚
+  }
 }
 
 function toggleExpand(noteId: string) {

@@ -60,11 +60,15 @@ async def chat_stream(
         return EventSourceResponse(empty_gen())
 
     sid = session_id or str(uuid.uuid4())
+    tid = str(uuid.uuid4())  # trace_id — 贯穿本次请求所有 LLM 调用
 
     async def event_generator():
+        # 每个 SSE 流创建独立连接，避免多流并发写同一连接导致 database is locked
+        from src.db.schema import get_conn as new_conn
+        stream_conn = new_conn()
         from src.agent.router import route_serial
         try:
-            async for event in route_serial(input, sid, conn=_conn):
+            async for event in route_serial(input, sid, conn=stream_conn, prompt_version=prompt_version, trace_id=tid):
                 etype = event.get("type")
 
                 if etype == "token":
@@ -109,13 +113,19 @@ async def chat_stream(
                     }
 
                 elif etype == "done":
-                    yield {"event": "done", "data": json.dumps({"session_id": sid})}
+                    # 跳过 BaseAgent.astream 发出的 agent 级别 done（无 trace_id），
+                    # 只透传 route_serial 的最终 done（携带完整 trace_id）
+                    if not event.get("trace_id"):
+                        continue
+                    yield {"event": "done", "data": json.dumps({"session_id": sid, "trace_id": event.get("trace_id", "")})}
 
                 elif etype == "error":
                     yield {"event": "error", "data": event.get("message", "unknown error")}
 
         except Exception as exc:
             yield {"event": "error", "data": str(exc)}
+        finally:
+            stream_conn.close()
 
     return EventSourceResponse(event_generator())
 
@@ -274,6 +284,31 @@ async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
     return result
 
 
+# ── GET /trace/{trace_id} ────────────────────────────────────
+@router.get("/trace/{trace_id}")
+def get_trace(trace_id: str, conn: sqlite3.Connection = Depends(get_conn)):
+    rows = conn.execute(
+        "SELECT id, session_id, model, input_tokens, output_tokens, "
+        "cost_usd, latency_ms, status, created_at "
+        "FROM llm_calls WHERE trace_id = ? ORDER BY created_at ASC",
+        (trace_id,),
+    ).fetchall()
+    calls = [dict(r) for r in rows]
+    total_tokens = sum(c["input_tokens"] + c["output_tokens"] for c in calls)
+    total_cost = sum(c["cost_usd"] for c in calls)
+    total_ms = sum(c["latency_ms"] for c in calls)
+    return {
+        "trace_id": trace_id,
+        "calls": calls,
+        "summary": {
+            "total_tokens": total_tokens,
+            "total_cost_usd": round(total_cost, 6),
+            "total_latency_ms": total_ms,
+            "call_count": len(calls),
+        },
+    }
+
+
 def _cache_digest(conn: sqlite3.Connection, today: str, payload: dict) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO daily_digests "
@@ -328,11 +363,9 @@ def _detect_trends(conn: sqlite3.Connection, note_rows: list) -> dict:
             trends.append(f"笔记频率下降：后段 {second_half} 条 vs 前段 {first_half} 条")
 
     # 标签热度
-    for tag, count in sorted(by_tag.items(), key=lambda x: -x[1]):
-        if count >= 3:
-            trends.append(f"关注话题「{tag}」出现 {count} 次")
-        else:
-            break
+    hot_tags = [(tag, count) for tag, count in sorted(by_tag.items(), key=lambda x: (-x[1], x[0])) if count >= 3]
+    for tag, count in hot_tags:
+        trends.append(f"关注话题「{tag}」出现 {count} 次")
 
     # 异常空白日（活跃日之间有 0 笔记的日期，最多报 2 个）
     if len(sorted_days) >= 3:

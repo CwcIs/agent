@@ -33,8 +33,17 @@ class BaseAgent(ABC):
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+        self._session_id = ""
+        self._prompt_version = "v1"
+        self._trace_id = ""
         self._tools = self._make_tools()
         self._graph = self._build_graph()
+
+    def set_runtime_context(self, session_id: str, prompt_version: str = "v1", trace_id: str = "") -> None:
+        """设置当前请求的运行时上下文，call_llm 需要这些来记账和预算检查。"""
+        self._session_id = session_id
+        self._prompt_version = prompt_version
+        self._trace_id = trace_id
 
     @abstractmethod
     def _make_tools(self) -> list:
@@ -47,8 +56,15 @@ class BaseAgent(ABC):
         system = self.system_prompt
 
         async def call_model(state: AgentState) -> dict:
+            from src.lib.llm_call import call_llm
             msgs = [SystemMessage(content=system)] + state["messages"]
-            response = await llm.ainvoke(msgs)
+            response = await call_llm(
+                llm, msgs,
+                conn=self.conn,
+                session_id=self._session_id,
+                prompt_version=self._prompt_version,
+                trace_id=self._trace_id,
+            )
             return {"messages": [response]}
 
         def should_continue(state: AgentState) -> str:

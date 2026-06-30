@@ -38,6 +38,7 @@ from context.assemble import (
     _select_anchors,
     _build_tombstone,
     _msg_from_dict,
+    _offload_large_tool_results,
     FIRST_HOP_BUDGET_TOKENS,
     HANDOFF_BUDGET_TOKENS,
     BURST_MAX_MSGS,
@@ -45,6 +46,11 @@ from context.assemble import (
     SCORE_THREAD_OPENER,
     SCORE_CODE_BLOCK,
     SCORE_MENTION_OR_TOOL,
+    LARGE_TOOL_RESULT_CHARS,
+    LARGE_TOOL_RESULT_PREVIEW,
+    BUDGET_ESCALATION_RATIO,
+    MIN_ANCHOR_SCORE,
+    TOMBSTONE_TOKEN_RESERVE,
 )
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -338,24 +344,58 @@ def test_build_tombstone_dedup_keywords():
 # ============================================================
 
 def test_select_anchors_empty():
-    assert _select_anchors([], 0) == []
+    anchors, tombstone = _select_anchors([], 0, max_tokens=100)
+    assert anchors == []
+    assert tombstone == []
 
 
 def test_select_anchors_picks_top_by_score():
-    """应选分数最高的前 ANCHOR_TOP_N 条。"""
+    """预算充足时，评分达标的消息都应选为锚点。"""
     omitted = [
         {"role": "assistant", "content": "普通回复", "original_idx": 0},
-        {"role": "user", "content": "帮我查```code```技术债", "original_idx": 1},  # code + user = 3+0? No, this isn't thread opener
+        {"role": "user", "content": "帮我查```code```技术债", "original_idx": 1},
         {"role": "assistant", "content": "@review 这个", "original_idx": 2},         # mention +2
         {"role": "tool", "content": "tool:search_notes:[...]", "original_idx": 3},  # tool +2
         {"role": "user", "content": "长" + "x" * 300, "original_idx": 4},          # long +1
     ]
-    anchors = _select_anchors(omitted, first_user_idx=1)  # idx 1 is user but not opener (opener would need to match first_user_idx)
-    assert len(anchors) <= 3
-    # 最高分的应该被选中
+    anchors, tombstone = _select_anchors(omitted, first_user_idx=1, max_tokens=5000)
+    # 评分 >=1 的消息都应入选
+    assert len(anchors) >= 3
     scores = [_importance_score(m, m["original_idx"] == 1) for m in anchors]
-    # 锚点至少有 score > 0 的
-    assert any(s > 0 for s in scores)
+    assert all(s >= MIN_ANCHOR_SCORE for s in scores)
+    # 评分 0 的消息进 tombstone
+    assert len(tombstone) >= 1
+    assert tombstone[0]["content"] == "普通回复"
+
+
+def test_select_anchors_respects_budget():
+    """token 预算不够时，只装得下评分最高的部分消息。"""
+    omitted = [
+        {"role": "user", "content": "帮我查```code```技术债", "original_idx": 0},   # ~5 tokens
+        {"role": "assistant", "content": "@review 这个", "original_idx": 1},        # ~3 tokens, score 2
+        {"role": "tool", "content": "tool:search_notes:[...]", "original_idx": 2}, # ~9 tokens, score 2
+    ]
+    # 预算只够装第一条
+    tight_budget = estimate_tokens(omitted[0]["content"]) + 1
+    anchors, tombstone = _select_anchors(omitted, first_user_idx=0, max_tokens=tight_budget)
+    assert len(anchors) == 1
+    # 其余进 tombstone
+    assert len(tombstone) == 2
+
+
+def test_select_anchors_score_threshold():
+    """评分低于 MIN_ANCHOR_SCORE 的消息不进 anchor。"""
+    omitted = [
+        {"role": "assistant", "content": "好的", "original_idx": 0},           # score 0
+        {"role": "assistant", "content": "知道了", "original_idx": 1},         # score 0
+        {"role": "user", "content": "查询```code```", "original_idx": 2},     # score > 0
+    ]
+    anchors, tombstone = _select_anchors(omitted, first_user_idx=None, max_tokens=5000)
+    # 只有 score >= 1 的进 anchor
+    assert len(anchors) == 1
+    assert "查询" in anchors[0]["content"]
+    # score 0 的全部进 tombstone
+    assert len(tombstone) == 2
 
 
 # ============================================================
@@ -387,7 +427,7 @@ def test_assemble_context_respects_burst_boundary():
 
 
 def test_assemble_context_generates_tombstone_for_large_history():
-    """大量历史消息时生成墓碑摘要。"""
+    """大量历史消息 + 极小预算时生成墓碑摘要。"""
     conn = _init_test_db()
     sid = "tombstone-test"
 
@@ -397,7 +437,8 @@ def test_assemble_context_generates_tombstone_for_large_history():
         _insert_msg(conn, sid, "assistant", f"回答 {i}")
     _insert_msg(conn, sid, "user", "最新问题")
 
-    result = assemble_context(conn, sid)
+    # 极小预算强制走路径 C
+    result = assemble_context(conn, sid, budget_tokens=10)
     contents = [m.content if hasattr(m, 'content') else "" for m in result]
 
     # 墓碑应在开头
@@ -598,6 +639,151 @@ def test_full_flow_assemble_then_handoff():
 
 
 # ============================================================
+# v3: L1 Large File Offload
+# ============================================================
+
+def test_offload_large_tool_result():
+    """单条 tool 消息超过阈值时应截断并附加提示。"""
+    large_content = "x" * (LARGE_TOOL_RESULT_CHARS + 100)
+    msgs = [
+        {"role": "tool", "content": large_content, "original_idx": 0},
+    ]
+    result = _offload_large_tool_results(msgs)
+    assert len(result) == 1
+    assert len(result[0]["content"]) < len(large_content)
+    assert "工具结果过长" in result[0]["content"]
+    assert "get_note" in result[0]["content"]
+    # 前 LARGE_TOOL_RESULT_PREVIEW 字符应保留
+    assert result[0]["content"].startswith("x" * LARGE_TOOL_RESULT_PREVIEW)
+
+
+def test_offload_small_tool_result_untouched():
+    """小工具结果不触发卸载。"""
+    small_content = "短结果"
+    msgs = [
+        {"role": "tool", "content": small_content, "original_idx": 0},
+    ]
+    result = _offload_large_tool_results(msgs)
+    assert result[0]["content"] == small_content
+
+
+def test_offload_non_tool_untouched():
+    """非 tool 消息不触发卸载。"""
+    long_user = "y" * 3000
+    msgs = [
+        {"role": "user", "content": long_user, "original_idx": 0},
+        {"role": "assistant", "content": "ok", "original_idx": 1},
+    ]
+    result = _offload_large_tool_results(msgs)
+    assert result[0]["content"] == long_user
+    assert result[1]["content"] == "ok"
+
+
+def test_offload_returns_new_list():
+    """不修改输入 list。"""
+    msgs = [
+        {"role": "tool", "content": "x" * (LARGE_TOOL_RESULT_CHARS + 500)},
+    ]
+    original = list(msgs)
+    _offload_large_tool_results(msgs)
+    assert msgs == original
+
+
+# ============================================================
+# v3: Trigger Threshold — Path A (under budget, zero-cost pass-through)
+# ============================================================
+
+def test_assemble_path_a_under_budget():
+    """历史 token 未超预算时原样返回，不跑三阶段。"""
+    conn = _init_test_db()
+    sid = "path-a-test"
+    _insert_msg(conn, sid, "user", "你好")
+    _insert_msg(conn, sid, "assistant", "你好！")
+
+    result = assemble_context(conn, sid, budget_tokens=500)
+    assert len(result) == 2
+    assert isinstance(result[0], HumanMessage)
+    assert isinstance(result[1], AIMessage)
+    # 不应有 tombstone
+    contents = [m.content for m in result]
+    assert not any("[省略 " in c for c in contents)
+
+
+def test_assemble_path_a_skips_tombstone():
+    """小历史不应生成墓碑摘要。"""
+    conn = _init_test_db()
+    sid = "path-a-no-tombstone"
+    for i in range(3):
+        _insert_msg(conn, sid, "user", f"问题 {i}")
+        _insert_msg(conn, sid, "assistant", f"回答 {i}")
+
+    # 6 条短消息 token 数很少，用大预算
+    result = assemble_context(conn, sid, budget_tokens=5000)
+    has_tombstone = any(
+        "[省略 " in (m.content if hasattr(m, 'content') else "")
+        for m in result
+    )
+    assert not has_tombstone
+
+
+# ============================================================
+# v3: Trigger Threshold — Path B (burst only, no tombstone)
+# ============================================================
+
+def test_assemble_path_b_burst_only():
+    """token 在 budget~1.5x 之间时只保留 burst，不生成 tombstone。"""
+    conn = _init_test_db()
+    sid = "path-b-test"
+
+    # 旧消息（用极小时间间隔，确保无 gap）
+    for i in range(8):
+        _insert_msg_with_ts(conn, sid, "user", f"旧问题 {i}",
+                            f"2026-06-29 10:{i*2:02d}:00")
+        _insert_msg_with_ts(conn, sid, "assistant", f"旧回答 {i}",
+                            f"2026-06-29 10:{i*2+1:02d}:00")
+    # 新 burst（间隔 30 分钟）
+    _insert_msg_with_ts(conn, sid, "user", "新问题",
+                        f"2026-06-29 10:30:00")
+    _insert_msg_with_ts(conn, sid, "assistant", "新回答",
+                        f"2026-06-29 10:30:05")
+
+    # 用适中预算使 total 落在 budget~1.5x 区间
+    result = assemble_context(conn, sid, budget_tokens=150)
+
+    contents = [m.content if hasattr(m, 'content') else "" for m in result]
+    # 新 burst 应保留
+    assert "新问题" in contents
+    assert "新回答" in contents
+    # 不应有 tombstone（路径 B 不摘要）
+    assert not any("[省略 " in c for c in contents)
+
+
+# ============================================================
+# v3: Trigger Threshold — Path C (full three-stage, L5 tombstone)
+# ============================================================
+
+def test_assemble_path_c_with_tombstone():
+    """token 严重超标时走完整三阶段，应有墓碑摘要。"""
+    conn = _init_test_db()
+    sid = "path-c-test"
+
+    # 大量长消息确保超标
+    for i in range(12):
+        _insert_msg(conn, sid, "user", f"问题 {i}：" + "这是一个比较长的用户输入 " * 10)
+        _insert_msg(conn, sid, "assistant", f"回答 {i}：" + "这是一个很长的助理回复 " * 10)
+    _insert_msg(conn, sid, "user", "最新问题")
+
+    # 极小预算迫使走路径 C
+    result = assemble_context(conn, sid, budget_tokens=50)
+
+    contents = [m.content if hasattr(m, 'content') else "" for m in result]
+    # 应有 tombstone
+    assert any("[省略 " in c and "条消息" in c for c in contents)
+    # 最新问题应保留
+    assert "最新问题" in contents
+
+
+# ============================================================
 # Main
 # ============================================================
 
@@ -640,9 +826,24 @@ if __name__ == "__main__":
         test_build_tombstone_empty,
         test_build_tombstone_with_omitted,
         test_build_tombstone_dedup_keywords,
-        # v2: _select_anchors
+        # v2: _select_anchors (v3 return type)
         test_select_anchors_empty,
         test_select_anchors_picks_top_by_score,
+        # v3: adaptive anchors
+        test_select_anchors_respects_budget,
+        test_select_anchors_score_threshold,
+        # v3: L1 large file offload
+        test_offload_large_tool_result,
+        test_offload_small_tool_result_untouched,
+        test_offload_non_tool_untouched,
+        test_offload_returns_new_list,
+        # v3: Path A (under budget)
+        test_assemble_path_a_under_budget,
+        test_assemble_path_a_skips_tombstone,
+        # v3: Path B (burst only)
+        test_assemble_path_b_burst_only,
+        # v3: Path C (full three-stage)
+        test_assemble_path_c_with_tombstone,
         # v2: assemble_context with burst
         test_assemble_context_respects_burst_boundary,
         test_assemble_context_generates_tombstone_for_large_history,

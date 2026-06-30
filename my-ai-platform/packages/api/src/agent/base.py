@@ -64,6 +64,7 @@ class BaseAgent(ABC):
                 session_id=self._session_id,
                 prompt_version=self._prompt_version,
                 trace_id=self._trace_id,
+                agent_id=self.agent_id,
             )
             return {"messages": [response]}
 

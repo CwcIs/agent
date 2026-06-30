@@ -74,12 +74,18 @@ let eventSource: EventSource | null = null;
 const traceId = ref<string | null>(null);
 const traceExpanded = ref(false);
 interface TraceCall {
-  id: string; session_id: string; model: string;
+  id: string; agent_id: string; model: string;
   input_tokens: number; output_tokens: number;
   cost_usd: number; latency_ms: number; status: string; created_at: string;
 }
+interface TraceAgent {
+  agent_id: string;
+  calls: TraceCall[];
+  subtotal: { tokens: number; cost_usd: number; latency_ms: number; call_count: number };
+}
 interface TraceData {
-  trace_id: string; calls: TraceCall[];
+  trace_id: string;
+  agents: TraceAgent[];
   summary: { total_tokens: number; total_cost_usd: number; total_latency_ms: number; call_count: number };
 }
 const traceData = ref<TraceData | null>(null);
@@ -101,11 +107,11 @@ function toggleTrace() {
 }
 
 const AGENT_DISPLAY: Record<string, string> = { knowledge: "Knowledge Agent", review: "Review Agent", brain: "Brain Agent" };
-function guessAgent(model: string): string {
-  if (model.includes("deepseek")) return "knowledge";
-  if (model.includes("gpt")) return "review";
-  if (model.includes("gemini")) return "brain";
-  return "";
+function agentBadgeClass(agentId: string): string {
+  const base = 'px-1.5 py-0.5 rounded font-mono text-[10px] shrink-0 min-w-[64px] text-center';
+  if (agentId === 'review') return base + ' bg-amber-500/10 text-amber-400';
+  if (agentId === 'brain')  return base + ' bg-purple-500/10 text-purple-400';
+  return base + ' bg-emerald-500/10 text-emerald-400';
 }
 function formatMs(ms: number): string {
   if (ms >= 1000) return (ms / 1000).toFixed(1) + "s";
@@ -479,50 +485,40 @@ onUnmounted(() => {
           </svg>
         </div>
 
-        <!-- 展开详情 -->
+        <!-- 展开详情：按 Agent 分组 -->
         <div v-if="traceExpanded && traceData" class="border-t border-white/[0.06]">
-          <div class="px-3 py-2 space-y-1.5">
-            <div
-              v-for="(call, ci) in traceData.calls"
-              :key="ci"
-              class="flex items-center gap-2 text-[11px]"
-            >
-              <!-- Agent badge -->
-              <span
-                :class="[
-                  'px-1.5 py-0.5 rounded font-mono text-[10px] shrink-0 min-w-[64px] text-center',
-                  guessAgent(call.model) === 'review'
-                    ? 'bg-amber-500/10 text-amber-400'
-                    : guessAgent(call.model) === 'brain'
-                      ? 'bg-purple-500/10 text-purple-400'
-                      : 'bg-emerald-500/10 text-emerald-400'
-                ]"
-              >{{ guessAgent(call.model) }}</span>
-
-              <!-- Model -->
-              <span class="text-gray-500 font-mono text-[10px] shrink-0">{{ call.model }}</span>
-
-              <!-- Tokens -->
-              <span class="text-gray-600">in:{{ call.input_tokens }} out:{{ call.output_tokens }}</span>
-
-              <!-- Latency -->
-              <span class="text-gray-500 ml-auto shrink-0">{{ formatMs(call.latency_ms) }}</span>
-
-              <!-- Status -->
-              <svg
-                v-if="call.status === 'ok'"
-                class="w-3 h-3 text-emerald-500 shrink-0"
-                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+          <div class="px-3 py-2 space-y-2">
+            <div v-for="agent in traceData.agents" :key="agent.agent_id">
+              <!-- Agent 汇总行 -->
+              <div class="flex items-center gap-2 text-[11px] px-2 py-1">
+                <span :class="agentBadgeClass(agent.agent_id)">{{ agent.agent_id }}</span>
+                <span class="text-gray-600">{{ agent.subtotal.tokens.toLocaleString() }} tokens</span>
+                <span class="text-gray-500 ml-auto">{{ formatMs(agent.subtotal.latency_ms) }}</span>
+              </div>
+              <!-- call 明细（缩进） -->
+              <div
+                v-for="(call, ci) in agent.calls"
+                :key="ci"
+                class="flex items-center gap-2 text-[11px] py-0.5 pl-8 opacity-70"
               >
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-              </svg>
-              <svg
-                v-else
-                class="w-3 h-3 text-red-400 shrink-0"
-                fill="none" stroke="currentColor" viewBox="0 0 24 24"
-              >
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-              </svg>
+                <span class="text-gray-500 font-mono text-[10px]">{{ call.model }}</span>
+                <span class="text-gray-600">in:{{ call.input_tokens }} out:{{ call.output_tokens }}</span>
+                <span class="text-gray-500 ml-auto">{{ formatMs(call.latency_ms) }}</span>
+                <svg
+                  v-if="call.status === 'ok'"
+                  class="w-3 h-3 text-emerald-500 shrink-0"
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                </svg>
+                <svg
+                  v-else
+                  class="w-3 h-3 text-red-400 shrink-0"
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </div>
             </div>
           </div>
         </div>

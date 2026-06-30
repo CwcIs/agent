@@ -203,4 +203,10 @@ def init_db(conn: sqlite3.Connection) -> None:
     except Exception:
         pass  # 列已存在
 
+    # ── 迁移：llm_calls 增加 agent_id 列（Trace 面板按 Agent 分组） ──
+    try:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''")
+    except Exception:
+        pass  # 列已存在
+
     conn.commit()

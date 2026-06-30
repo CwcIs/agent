@@ -288,22 +288,39 @@ async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
 @router.get("/trace/{trace_id}")
 def get_trace(trace_id: str, conn: sqlite3.Connection = Depends(get_conn)):
     rows = conn.execute(
-        "SELECT id, session_id, model, input_tokens, output_tokens, "
+        "SELECT id, session_id, agent_id, model, input_tokens, output_tokens, "
         "cost_usd, latency_ms, status, created_at "
         "FROM llm_calls WHERE trace_id = ? ORDER BY created_at ASC",
         (trace_id,),
     ).fetchall()
     calls = [dict(r) for r in rows]
-    total_tokens = sum(c["input_tokens"] + c["output_tokens"] for c in calls)
-    total_cost = sum(c["cost_usd"] for c in calls)
-    total_ms = sum(c["latency_ms"] for c in calls)
+
+    # 按 agent_id 分组，保持首次出现顺序
+    groups: dict[str, list] = {}
+    for c in calls:
+        aid = c["agent_id"] or "unknown"
+        groups.setdefault(aid, []).append(c)
+
+    agents = []
+    for aid, agent_calls in groups.items():
+        agents.append({
+            "agent_id": aid,
+            "calls": agent_calls,
+            "subtotal": {
+                "tokens": sum(c["input_tokens"] + c["output_tokens"] for c in agent_calls),
+                "cost_usd": round(sum(c["cost_usd"] for c in agent_calls), 6),
+                "latency_ms": sum(c["latency_ms"] for c in agent_calls),
+                "call_count": len(agent_calls),
+            },
+        })
+
     return {
         "trace_id": trace_id,
-        "calls": calls,
+        "agents": agents,
         "summary": {
-            "total_tokens": total_tokens,
-            "total_cost_usd": round(total_cost, 6),
-            "total_latency_ms": total_ms,
+            "total_tokens": sum(c["input_tokens"] + c["output_tokens"] for c in calls),
+            "total_cost_usd": round(sum(c["cost_usd"] for c in calls), 6),
+            "total_latency_ms": sum(c["latency_ms"] for c in calls),
             "call_count": len(calls),
         },
     }

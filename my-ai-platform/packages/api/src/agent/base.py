@@ -117,11 +117,21 @@ class BaseAgent(ABC):
 
             elif kind == "on_tool_end":
                 output = event["data"].get("output", "")
+                # LangGraph ToolNode sets status="error" on the ToolMessage when a tool raises.
+                # Normalize to structured JSON so the frontend can read the flag directly
+                # without a secondary DB query — same idea as Clowder's isError flag.
+                if hasattr(output, "status") and output.status == "error":
+                    result = _json.dumps(
+                        {"status": "error", "message": str(output.content)[:280]},
+                        ensure_ascii=False,
+                    )
+                else:
+                    result = str(output)[:300]
                 yield {
                     "type": "tool_end",
                     "agentId": self.agent_id,
                     "name": event["name"],
-                    "result": str(output)[:300],
+                    "result": result,
                 }
 
         yield {"type": "done", "agentId": self.agent_id}

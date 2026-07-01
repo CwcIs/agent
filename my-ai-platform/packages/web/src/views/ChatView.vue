@@ -41,6 +41,7 @@ interface ToolCall {
   result?: string;
   status: "running" | "done";
   expanded?: boolean;
+  isError?: boolean;
 }
 
 interface Message {
@@ -220,6 +221,14 @@ function sendMessage() {
         if (target.toolCalls[tc].name === data.name && target.toolCalls[tc].status === "running") {
           target.toolCalls[tc].result = data.result;
           target.toolCalls[tc].status = "done";
+          // Parse tool result for isError flag — tools return {"status":"ok"/"error",...}
+          // No secondary GET request needed; same idea as Clowder's isError flag.
+          try {
+            const parsed = JSON.parse(data.result);
+            target.toolCalls[tc].isError = parsed.status === "error" || !!parsed.error;
+          } catch {
+            // Non-JSON result, treat as ok
+          }
           break;
         }
       }
@@ -409,7 +418,7 @@ onUnmounted(() => {
                   class="flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer select-none"
                   @click="tc.expanded = !tc.expanded"
                 >
-                  <!-- running 时旋转动画，done 时勾号 -->
+                  <!-- running 时旋转动画，error 时红叉，done 时勾号 -->
                   <svg
                     v-if="tc.status === 'running'"
                     class="w-3 h-3 text-indigo-400 animate-spin shrink-0"
@@ -417,6 +426,13 @@ onUnmounted(() => {
                   >
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <svg
+                    v-else-if="tc.isError"
+                    class="w-3 h-3 text-red-400 shrink-0"
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                  >
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                   </svg>
                   <svg
                     v-else

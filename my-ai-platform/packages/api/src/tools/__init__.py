@@ -221,7 +221,7 @@ def make_tools(conn: sqlite3.Connection) -> list:
             ).fetchone()
 
         if not r:
-            return json.dumps({"error": f"笔记 {note_id} 不存在或已删除"}, ensure_ascii=False)
+            return json.dumps({"status": "error", "message": f"笔记 {note_id} 不存在或已删除"}, ensure_ascii=False)
 
         d = dict(r)
         d["tags"] = json.loads(d.pop("tags_json", "[]"))
@@ -239,7 +239,7 @@ def make_tools(conn: sqlite3.Connection) -> list:
             (note_id,),
         ).fetchone()
         if not row:
-            return json.dumps({"error": f"笔记 {note_id} 不存在、已删除或已归档"}, ensure_ascii=False)
+            return json.dumps({"status": "error", "message": f"笔记 {note_id} 不存在、已删除或已归档"}, ensure_ascii=False)
 
         conn.execute(
             "UPDATE notes SET status='archived', updated_at=datetime('now','localtime') WHERE id=?",

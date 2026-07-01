@@ -62,6 +62,8 @@ async function fetchNotes() {
 
 onMounted(fetchNotes);
 
+defineExpose({ refresh: fetchNotes });
+
 function formatDate(s: string) {
   const d = new Date(s);
   return isNaN(d.getTime()) ? s : `${d.getMonth() + 1}/${d.getDate()}`;

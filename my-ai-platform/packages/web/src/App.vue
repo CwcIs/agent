@@ -6,6 +6,7 @@ import DailyDigestPanel from "./views/DailyDigestPanel.vue";
 
 const sidebarOpen = ref(true);
 const chatRef = ref<InstanceType<typeof ChatView> | null>(null);
+const noteListRef = ref<InstanceType<typeof NoteListView> | null>(null);
 
 function handleFollowUp(q: string) {
   chatRef.value?.sendWithText(q);
@@ -29,7 +30,7 @@ function handleFollowUp(q: string) {
           </button>
         </div>
         <div class="flex-1 overflow-y-auto">
-          <NoteListView />
+          <NoteListView ref="noteListRef" />
         </div>
       </aside>
     </transition>
@@ -57,7 +58,7 @@ function handleFollowUp(q: string) {
       <DailyDigestPanel @follow-up="handleFollowUp" />
 
       <!-- Chat -->
-      <ChatView ref="chatRef" />
+      <ChatView ref="chatRef" @note-saved="noteListRef?.refresh()" />
     </main>
   </div>
 </template>

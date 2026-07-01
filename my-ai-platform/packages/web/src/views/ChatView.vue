@@ -63,6 +63,8 @@ function getOrCreateSessionId(): string {
 }
 const sessionId = getOrCreateSessionId();
 
+const emit = defineEmits<{ noteSaved: [] }>();
+
 const messages = ref<Message[]>([]);
 const input = ref("");
 const streaming = ref(false);
@@ -257,6 +259,7 @@ function sendMessage() {
       if (data.trace_id) traceId.value = data.trace_id;
     } catch { /* ignore */ }
     eventSource?.close();
+    emit("noteSaved");
   });
 
   eventSource.onerror = () => {

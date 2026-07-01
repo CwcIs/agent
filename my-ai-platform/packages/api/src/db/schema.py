@@ -1,5 +1,5 @@
 # ============================================================
-# SQLite 8 表 Schema（Phase 1 + 2 + 3）
+# SQLite 9 表 Schema（Phase 1 + 2 + 3 + 4）
 # 对应 MD §8.5 Phase 1 全部表 + §4.3 数据模型
 #
 # 表：
@@ -10,10 +10,11 @@
 #   5. llm_errors      — JSON 解析 / tool_use 失败记录
 #   6. eval_runs       — 黄金集运行记录
 #   7. embedding_meta  — embedding 模型指纹（换模型只加一行）
-#   8. worklist        — A2A 任务持久化（进程崩了不丢 handoff）
+#   8. edges           — 笔记关系图谱（wikilink / evolved_from / supersedes / contradicts）
+#   9. worklist        — A2A 任务持久化（进程崩了不丢 handoff）
 #
-# 为什么这 6 张？（MD §8.5）：
-#   notes / messages 是业务，剩下 4 张全是工程兜底。
+# 为什么这些表？（MD §8.5）：
+#   notes / messages 是业务，edges 是关系，剩下 5 张全是工程兜底。
 #   没有它们就只能"感觉"AI 在变好，没法量化。
 #   Phase 1 就要把"可观测"扎进 schema，不等 Phase 3 才补。
 #
@@ -161,7 +162,19 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
-        -- ⑧ worklist — A2A 任务持久化（进程崩了不丢 handoff）
+        -- ⑧ edges — 笔记关系图谱（wikilink / evolved_from / supersedes / contradicts）
+        CREATE TABLE IF NOT EXISTS edges (
+            id         TEXT PRIMARY KEY,
+            from_id    TEXT NOT NULL REFERENCES notes(id),
+            to_id      TEXT NOT NULL REFERENCES notes(id),
+            relation   TEXT NOT NULL CHECK(relation IN ('wikilink','evolved_from','supersedes','contradicts','related')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(from_id, to_id, relation)
+        );
+        CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id);
+        CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);
+
+        -- ⑨ worklist — A2A 任务持久化（进程崩了不丢 handoff）
         CREATE TABLE IF NOT EXISTS worklist (
             id              TEXT PRIMARY KEY,
             session_id      TEXT NOT NULL,

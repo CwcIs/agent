@@ -284,6 +284,39 @@ async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
     return result
 
 
+# ── GET /notes/{id}/relations ─────────────────────────────────
+@router.get("/notes/{note_id}/relations")
+def get_note_relations(note_id: str, conn: sqlite3.Connection = Depends(get_conn)):
+    """返回一条笔记的所有关系（出链 + 入链）。"""
+    outgoing = conn.execute(
+        """
+        SELECT e.id, e.to_id, n.title as to_title, e.relation, e.created_at
+        FROM edges e
+        JOIN notes n ON n.id = e.to_id
+        WHERE e.from_id = ? AND n.deleted_at IS NULL
+        ORDER BY e.created_at DESC
+        """,
+        (note_id,),
+    ).fetchall()
+
+    incoming = conn.execute(
+        """
+        SELECT e.id, e.from_id, n.title as from_title, e.relation, e.created_at
+        FROM edges e
+        JOIN notes n ON n.id = e.from_id
+        WHERE e.to_id = ? AND n.deleted_at IS NULL
+        ORDER BY e.created_at DESC
+        """,
+        (note_id,),
+    ).fetchall()
+
+    return {
+        "note_id": note_id,
+        "outgoing": [{"id": r[0], "to_id": r[1], "to_title": r[2], "relation": r[3], "created_at": r[4]} for r in outgoing],
+        "incoming": [{"id": r[0], "from_id": r[1], "from_title": r[2], "relation": r[3], "created_at": r[4]} for r in incoming],
+    }
+
+
 # ── GET /trace/{trace_id} ────────────────────────────────────
 @router.get("/trace/{trace_id}")
 def get_trace(trace_id: str, conn: sqlite3.Connection = Depends(get_conn)):

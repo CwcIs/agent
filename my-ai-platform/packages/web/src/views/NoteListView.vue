@@ -10,10 +10,35 @@ interface Note {
   created_at: string;
 }
 
+interface Relation {
+  id: string;
+  to_id?: string;
+  to_title?: string;
+  from_id?: string;
+  from_title?: string;
+  relation: string;
+  created_at: string;
+}
+
+interface RelationsData {
+  outgoing: Relation[];
+  incoming: Relation[];
+}
+
 const notes = ref<Note[]>([]);
 const filter = ref<"live" | "archived" | "all">("live");
 const loading = ref(false);
 const expandedId = ref<string | null>(null);
+const relationsCache = ref<Record<string, RelationsData>>({});
+const relationsLoading = ref<Record<string, boolean>>({});
+
+const RELATION_LABELS: Record<string, string> = {
+  wikilink: "双链",
+  evolved_from: "衍生自",
+  supersedes: "取代",
+  contradicts: "矛盾",
+  related: "相关",
+};
 
 const filtered = computed(() =>
   filter.value === "all" ? notes.value : notes.value.filter((n) => n.status === filter.value)
@@ -71,7 +96,29 @@ async function deleteNote(note: Note) {
 }
 
 function toggleExpand(noteId: string) {
-  expandedId.value = expandedId.value === noteId ? null : noteId;
+  if (expandedId.value === noteId) {
+    expandedId.value = null;
+    return;
+  }
+  expandedId.value = noteId;
+  // 懒加载关系图谱
+  if (!relationsCache.value[noteId] && !relationsLoading.value[noteId]) {
+    fetchRelations(noteId);
+  }
+}
+
+async function fetchRelations(noteId: string) {
+  relationsLoading.value[noteId] = true;
+  try {
+    const resp = await fetch(`/notes/${noteId}/relations`);
+    if (resp.ok) {
+      relationsCache.value[noteId] = await resp.json();
+    }
+  } catch {
+    // ignore
+  } finally {
+    relationsLoading.value[noteId] = false;
+  }
 }
 </script>
 
@@ -153,6 +200,47 @@ function toggleExpand(noteId: string) {
           <div class="flex items-center gap-3 mt-2 text-[10px] text-gray-600">
             <span>创建于 {{ formatDate(note.created_at) }}</span>
             <span class="text-gray-700">{{ note.id.slice(0, 8) }}</span>
+          </div>
+
+          <!-- 相关笔记（关系图谱） -->
+          <div
+            v-if="relationsCache[note.id]"
+            class="mt-2.5 pt-2.5 border-t border-white/[0.06]"
+          >
+            <template v-if="relationsCache[note.id].outgoing.length || relationsCache[note.id].incoming.length">
+              <!-- 出链 -->
+              <div v-if="relationsCache[note.id].outgoing.length" class="mb-2">
+                <span class="text-[10px] text-gray-600 font-medium">链接到</span>
+                <div class="mt-1 space-y-1">
+                  <div
+                    v-for="rel in relationsCache[note.id].outgoing"
+                    :key="rel.id"
+                    class="flex items-center gap-1.5 text-[11px]"
+                  >
+                    <span class="text-gray-500 truncate max-w-[140px]">{{ rel.to_title }}</span>
+                    <span class="text-[10px] px-1 rounded bg-white/[0.04] text-gray-700 shrink-0">{{ RELATION_LABELS[rel.relation] || rel.relation }}</span>
+                  </div>
+                </div>
+              </div>
+              <!-- 入链 -->
+              <div v-if="relationsCache[note.id].incoming.length">
+                <span class="text-[10px] text-gray-600 font-medium">被引用</span>
+                <div class="mt-1 space-y-1">
+                  <div
+                    v-for="rel in relationsCache[note.id].incoming"
+                    :key="rel.id"
+                    class="flex items-center gap-1.5 text-[11px]"
+                  >
+                    <span class="text-gray-500 truncate max-w-[140px]">{{ rel.from_title }}</span>
+                    <span class="text-[10px] px-1 rounded bg-white/[0.04] text-gray-700 shrink-0">{{ RELATION_LABELS[rel.relation] || rel.relation }}</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <p v-else class="text-[10px] text-gray-700">暂无关联笔记</p>
+          </div>
+          <div v-else-if="relationsLoading[note.id]" class="mt-2.5 pt-2.5 border-t border-white/[0.06]">
+            <span class="text-[10px] text-gray-700 animate-pulse">加载关联…</span>
           </div>
         </div>
       </li>

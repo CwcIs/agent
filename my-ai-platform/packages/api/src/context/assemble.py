@@ -57,6 +57,11 @@ MIN_ANCHOR_SCORE = 1               # v3: 锚点最低评分，低于此值不进
 LONG_MSG_CHARS = 200               # 长消息阈值（字符数，用于评分）
 TOMBSTONE_TOKEN_RESERVE = 50       # v3: 为墓碑消息预留的 token 空间
 
+# ── Related notes injection ──
+RELATED_NOTES_BUDGET = 600          # 相关笔记注入的 token 预算
+RELATED_NOTES_COUNT = 5             # 最多注入几条相关笔记
+RELATED_NOTE_PREVIEW_CHARS = 120    # 每条笔记内容预览的字符上限
+
 # 重要性评分权重
 SCORE_THREAD_OPENER = 5            # 线程首条（用户第一句话）
 SCORE_CODE_BLOCK = 3               # 含代码块
@@ -364,6 +369,57 @@ def _offload_large_tool_results(msgs: list[dict]) -> list[dict]:
 
 
 # ============================================================
+# Related Notes Injection（Context 改造 — Phase 4）
+# ============================================================
+
+def _fetch_related_notes(conn: sqlite3.Connection, user_input: str) -> str:
+    """
+    根据用户当前输入搜索相关知识库笔记，格式化为上下文注入段。
+
+    用 FTS5 关键词检索（同步，不依赖向量模型），
+    匹配 title + content，返回一个 markdown 段供 Agent 参考。
+
+    返回空字符串表示没有找到相关笔记。
+    """
+    if not user_input or not conn:
+        return ""
+
+    # FTS5 关键词检索
+    escaped = '"' + user_input.replace('"', '""') + '"'
+    try:
+        rows = conn.execute(
+            """
+            SELECT n.title, n.content
+            FROM notes_fts f
+            JOIN notes n ON n.rowid = f.rowid
+            WHERE notes_fts MATCH ?
+              AND n.status = 'live'
+              AND n.deleted_at IS NULL
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (escaped, RELATED_NOTES_COUNT),
+        ).fetchall()
+    except Exception:
+        return ""
+
+    if not rows:
+        return ""
+
+    lines = ["## 相关知识库笔记"]
+    for r in rows:
+        title = r[0]
+        content = r[1] or ""
+        # 截断内容预览
+        preview = content[:RELATED_NOTE_PREVIEW_CHARS].replace("\n", " ")
+        if len(content) > RELATED_NOTE_PREVIEW_CHARS:
+            preview += "…"
+        lines.append(f"- **{title}**: {preview}")
+
+    return "\n".join(lines)
+
+
+# ============================================================
 # First-Hop History Assembly (v2 — 三阶段算法)
 # ============================================================
 
@@ -371,6 +427,7 @@ def assemble_context(
     conn: sqlite3.Connection,
     session_id: str,
     budget_tokens: int = FIRST_HOP_BUDGET_TOKENS,
+    user_input: str | None = None,
 ) -> list[BaseMessage]:
     """
     从 DB 加载对话历史，按 CC 五层金字塔分层触发（v3）。
@@ -393,6 +450,9 @@ def assemble_context(
     Phase 3 — Tombstone:
       对所有被省略的消息生成一条墓碑摘要：
       "[省略 N 条消息。关键词: X, Y。如需详情可搜索笔记库]"
+
+    如果提供 user_input，还会搜索相关知识库笔记注入到上下文开头，
+    让 Agent 无需显式调用 search_notes 就能感知已有知识。
 
     返回 LangChain 消息列表，按时间正序排列（不包含当前用户输入，由 router 追加）。
     """
@@ -430,42 +490,51 @@ def assemble_context(
     # ── 触发阈值：能不压就不压（CC 精髓） ──
     total_tokens = sum(estimate_tokens(m["content"]) for m in all_msgs)
 
-    if total_tokens <= budget_tokens:
-        # 路径 A：不压，零成本原样返回
-        return [_msg_from_dict(m) for m in all_msgs]
-
-    if total_tokens <= int(budget_tokens * BUDGET_ESCALATION_RATIO):
-        # 路径 B：轻量清理 — 只保留最近 burst，不选 anchor，不生成 tombstone
-        burst_start = _detect_burst(all_msgs)
-        return [_msg_from_dict(m) for m in all_msgs[burst_start:]]
-
-    # ── 路径 C：超标严重，走完整三阶段（L5 tombstone） ──
-    burst_start = _detect_burst(all_msgs)
-    burst_msgs = all_msgs[burst_start:]
-    omitted_msgs = all_msgs[:burst_start]
-
-    # Phase 2: Anchor Selection（v3 预算自适应）
-    burst_tokens = sum(estimate_tokens(m["content"]) for m in burst_msgs)
-    anchor_budget = max(0, budget_tokens - burst_tokens - TOMBSTONE_TOKEN_RESERVE)
-    anchors, tombstone_msgs = _select_anchors(omitted_msgs, first_user_idx, anchor_budget)
-
-    # Phase 3: Tombstone
-    tombstone = _build_tombstone(tombstone_msgs)
-
-    # 组装最终结果（时间正序）
+    # 三条路径都收集到 result，最后统一注入 related notes
     result: list[BaseMessage] = []
 
-    if tombstone:
-        result.append(HumanMessage(content=tombstone))
+    if total_tokens <= budget_tokens:
+        # 路径 A：不压，零成本原样返回
+        result = [_msg_from_dict(m) for m in all_msgs]
 
-    # Anchors 按原始 index 排序
-    anchors.sort(key=lambda m: m["original_idx"])
-    for m in anchors:
-        result.append(_msg_from_dict(m))
+    elif total_tokens <= int(budget_tokens * BUDGET_ESCALATION_RATIO):
+        # 路径 B：轻量清理 — 只保留最近 burst，不选 anchor，不生成 tombstone
+        burst_start = _detect_burst(all_msgs)
+        result = [_msg_from_dict(m) for m in all_msgs[burst_start:]]
 
-    # Burst 已经按时间正序（来自 DB ORDER BY created_at ASC）
-    for m in burst_msgs:
-        result.append(_msg_from_dict(m))
+    else:
+        # ── 路径 C：超标严重，走完整三阶段（L5 tombstone） ──
+        burst_start = _detect_burst(all_msgs)
+        burst_msgs = all_msgs[burst_start:]
+        omitted_msgs = all_msgs[:burst_start]
+
+        # Phase 2: Anchor Selection（v3 预算自适应）
+        burst_tokens = sum(estimate_tokens(m["content"]) for m in burst_msgs)
+        anchor_budget = max(0, budget_tokens - burst_tokens - TOMBSTONE_TOKEN_RESERVE)
+        anchors, tombstone_msgs = _select_anchors(omitted_msgs, first_user_idx, anchor_budget)
+
+        # Phase 3: Tombstone
+        tombstone = _build_tombstone(tombstone_msgs)
+
+        if tombstone:
+            result.append(HumanMessage(content=tombstone))
+
+        # Anchors 按原始 index 排序
+        anchors.sort(key=lambda m: m["original_idx"])
+        for m in anchors:
+            result.append(_msg_from_dict(m))
+
+        # Burst 已经按时间正序（来自 DB ORDER BY created_at ASC）
+        for m in burst_msgs:
+            result.append(_msg_from_dict(m))
+
+    # ── Related notes injection（Context 改造 — Phase 4） ──
+    # 在所有路径的结果开头注入相关笔记，让 Agent 无需显式调用
+    # search_notes 就能感知已有知识。
+    if user_input:
+        related_section = _fetch_related_notes(conn, user_input)
+        if related_section:
+            result.insert(0, HumanMessage(content=related_section))
 
     return result
 

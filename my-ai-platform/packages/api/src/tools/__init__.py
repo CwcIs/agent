@@ -18,6 +18,7 @@
 
 import asyncio
 import json
+import re
 import sqlite3
 import uuid
 from typing import Optional
@@ -28,6 +29,54 @@ from src.lib.embeddings import upsert_embedding, search_similar
 
 # 持有后台任务引用，防止被 GC 取消导致 embedding 静默丢失
 _background_tasks: set[asyncio.Task] = set()
+
+# ── [[wikilink]] 解析 ──
+_WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+
+
+def _parse_wikilinks(content: str) -> list[str]:
+    """从笔记内容中提取所有 [[双链]] 引用的标题，去重保持出现顺序。"""
+    titles = _WIKILINK_RE.findall(content)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for t in titles:
+        t = t.strip()
+        if t and t not in seen:
+            seen.add(t)
+            unique.append(t)
+    return unique
+
+
+def _resolve_title_to_id(conn: sqlite3.Connection, title: str) -> str | None:
+    """按标题精确匹配查找笔记 ID。多条同名笔记时返回最近更新的。"""
+    rows = conn.execute(
+        "SELECT id FROM notes WHERE title = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+        (title,),
+    ).fetchall()
+    return rows[0][0] if rows else None
+
+
+def _create_wikilink_edges(conn: sqlite3.Connection, from_id: str, titles: list[str]) -> list[dict]:
+    """为 from_id 笔记创建指向 [[title]] 目标笔记的 wikilink edges。返回创建的 edge 列表。"""
+    created: list[dict] = []
+    for title in titles:
+        to_id = _resolve_title_to_id(conn, title)
+        if not to_id or to_id == from_id:
+            continue  # 目标不存在或自引用，静默跳过
+        edge_id = str(uuid.uuid4())
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO edges (id, from_id, to_id, relation) VALUES (?, ?, ?, 'wikilink')",
+                (edge_id, from_id, to_id),
+            )
+            conn.commit()
+            # 检查是否真的插入了（OR IGNORE 可能跳过重复）
+            row = conn.execute("SELECT id FROM edges WHERE id = ?", (edge_id,)).fetchone()
+            if row:
+                created.append({"id": edge_id, "from_id": from_id, "to_id": to_id, "relation": "wikilink", "to_title": title})
+        except Exception:
+            pass  # edge 创建失败不阻塞笔记保存
+    return created
 
 
 def _task_done_callback(task: asyncio.Task) -> None:
@@ -110,7 +159,8 @@ def make_tools(conn: sqlite3.Connection) -> list:
         """
         把一条新笔记保存到笔记库。
         tags 用逗号分隔，例如 '产品,增长'。
-        返回新笔记的 id。
+        内容中的 [[笔记标题]] 语法会自动创建双链关系。
+        返回新笔记的 id 和创建的双链边。
         """
         note_id = str(uuid.uuid4())
         tags_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
@@ -122,11 +172,19 @@ def make_tools(conn: sqlite3.Connection) -> list:
             (note_id, title, content, json.dumps(tags_list, ensure_ascii=False)),
         )
         conn.commit()
+
+        # ── [[wikilink]] 自动解析 → 写入 edges ──
+        wikilink_titles = _parse_wikilinks(content)
+        edges_created = _create_wikilink_edges(conn, note_id, wikilink_titles)
+
         # 后台异步写入 embedding，不阻塞 save_note 返回
         task = asyncio.create_task(_background_embed(conn, note_id, title, content))
         _background_tasks.add(task)
         task.add_done_callback(_task_done_callback)
-        return json.dumps({"status": "ok", "id": note_id, "title": title}, ensure_ascii=False)
+        return json.dumps({
+            "status": "ok", "id": note_id, "title": title,
+            "edges_created": len(edges_created),
+        }, ensure_ascii=False)
 
     @tool
     def get_note(note_id: str) -> str:
@@ -305,4 +363,39 @@ def make_tools(conn: sqlite3.Connection) -> list:
             "gaps": parsed.get("gaps", []),
         }, ensure_ascii=False)
 
-    return [search_notes, save_note, get_note, archive_note, get_notes_summary, synthesize_notes]
+    @tool
+    def get_note_relations(note_id: str) -> str:
+        """
+        查询一条笔记的关系图谱：哪些笔记链接了它、它链接了哪些笔记。
+        用户问"这条笔记和哪些笔记有关"、"它的前身是什么"、"有哪些矛盾观点"时调用。
+        返回 JSON：{ note_id, outgoing: [{to_id, to_title, relation}], incoming: [{from_id, from_title, relation}] }
+        """
+        outgoing = conn.execute(
+            """
+            SELECT e.to_id, n.title as to_title, e.relation, e.created_at
+            FROM edges e
+            JOIN notes n ON n.id = e.to_id
+            WHERE e.from_id = ? AND n.deleted_at IS NULL
+            ORDER BY e.created_at DESC
+            """,
+            (note_id,),
+        ).fetchall()
+
+        incoming = conn.execute(
+            """
+            SELECT e.from_id, n.title as from_title, e.relation, e.created_at
+            FROM edges e
+            JOIN notes n ON n.id = e.from_id
+            WHERE e.to_id = ? AND n.deleted_at IS NULL
+            ORDER BY e.created_at DESC
+            """,
+            (note_id,),
+        ).fetchall()
+
+        return json.dumps({
+            "note_id": note_id,
+            "outgoing": [{"to_id": r[0], "to_title": r[1], "relation": r[2], "created_at": r[3]} for r in outgoing],
+            "incoming": [{"from_id": r[0], "from_title": r[1], "relation": r[2], "created_at": r[3]} for r in incoming],
+        }, ensure_ascii=False)
+
+    return [search_notes, save_note, get_note, archive_note, get_notes_summary, synthesize_notes, get_note_relations]

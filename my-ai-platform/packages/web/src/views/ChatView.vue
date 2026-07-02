@@ -71,7 +71,7 @@ const input = ref("");
 const streaming = ref(false);
 const activeTag = computed(() => parseTag(input.value));
 const messagesEl = ref<HTMLElement | null>(null);
-let eventSource: EventSource | null = null;
+let abortController: AbortController | null = null;
 
 // ── Trace 面板 ──
 const traceId = ref<string | null>(null);
@@ -147,143 +147,231 @@ function resetToolStatus() {
   agentToolStatus.value = {};
 }
 
+// ── 手动 SSE 流解析器 ─────────────────────────────────────
+// 用 fetch + ReadableStream 替代原生 EventSource，
+// 因为 EventSource 只支持 GET → 长文本会被 URL 截断 → 431。
+// POST body 没有长度限制（由服务器 config 控制）。
+async function readSSEStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onEvent: (eventType: string, data: string) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      if (signal.aborted) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE 事件以 \n\n 分隔
+      const parts = buffer.split("\n\n");
+      // 最后一个可能不完整，留到下次
+      buffer = parts.pop() || "";
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        const lines = part.split("\n");
+        let eventType = "";
+        let data = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            data = line.slice(6);
+          }
+        }
+        if (eventType) {
+          onEvent(eventType, data);
+        }
+      }
+    }
+
+    // 处理流结束后残留的 buffer
+    if (buffer.trim()) {
+      const lines = buffer.split("\n");
+      let eventType = "";
+      let data = "";
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith("data: ")) {
+          data = line.slice(6);
+        }
+      }
+      if (eventType) {
+        onEvent(eventType, data);
+      }
+    }
+  } catch (err: unknown) {
+    if (!signal.aborted) {
+      console.error("SSE stream read error:", err);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function sendMessage() {
   if (!input.value.trim() || streaming.value) return;
 
-  messages.value.push({ role: "user", content: input.value, done: true });
+  const userInput = input.value;
+  messages.value.push({ role: "user", content: userInput, done: true });
   streaming.value = true;
   traceId.value = null;
   traceData.value = null;
   traceExpanded.value = false;
+  input.value = "";
   scrollBottom();
 
-  const encoded = encodeURIComponent(input.value);
-  eventSource = new EventSource(`/chat/stream?input=${encoded}&session_id=${sessionId}`);
+  abortController = new AbortController();
 
-  eventSource.addEventListener("token", (e) => {
-    const data = JSON.parse(e.data);
-    // 倒序查找该 agent 最近一条未完成的气泡（支持并行 fan-out interleaved 事件）
-    let target: Message | null = null;
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      const m = messages.value[i];
-      if (m.role === "assistant" && !m.done && m.agentId === data.agentId && !m.isSwitchBanner) {
-        target = m;
-        break;
-      }
-    }
-    if (target) {
-      target.content += data.delta;
-    } else {
-      messages.value.push({ role: "assistant", content: data.delta, agentId: data.agentId, done: false });
-    }
-    scrollBottom();
-  });
-
-  eventSource.addEventListener("tool_start", (e) => {
-    const data = JSON.parse(e.data);
-    // data: { name, input, agentId }
-    agentToolStatus.value[data.agentId] = data.name;
-
-    // 倒序查找该 agent 的未完成气泡
-    let target: Message | null = null;
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      const m = messages.value[i];
-      if (m.role === "assistant" && !m.done && m.agentId === data.agentId && !m.isSwitchBanner) {
-        target = m;
-        break;
-      }
-    }
-    if (target) {
-      if (!target.toolCalls) target.toolCalls = [];
-      target.toolCalls.push({
-        name: data.name,
-        input: data.input,
-        status: "running",
-      });
-    }
-  });
-
-  eventSource.addEventListener("tool_end", (e) => {
-    const data = JSON.parse(e.data);
-    // data: { name, result, agentId }
-    agentToolStatus.value[data.agentId] = null;
-
-    let target: Message | null = null;
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      const m = messages.value[i];
-      if (m.role === "assistant" && !m.done && m.agentId === data.agentId && !m.isSwitchBanner) {
-        target = m;
-        break;
-      }
-    }
-    if (target?.toolCalls) {
-      for (let tc = target.toolCalls.length - 1; tc >= 0; tc--) {
-        if (target.toolCalls[tc].name === data.name && target.toolCalls[tc].status === "running") {
-          target.toolCalls[tc].result = data.result;
-          target.toolCalls[tc].status = "done";
-          // Parse tool result for isError flag — tools return {"status":"ok"/"error",...}
-          // No secondary GET request needed; same idea as Clowder's isError flag.
-          try {
-            const parsed = JSON.parse(data.result);
-            target.toolCalls[tc].isError = parsed.status === "error" || !!parsed.error;
-          } catch {
-            // Non-JSON result, treat as ok
+  // 事件处理 — 与原来 EventSource 的 addEventListener 逻辑完全一致
+  function handleEvent(eventType: string, data: string) {
+    switch (eventType) {
+      case "token": {
+        const parsed = JSON.parse(data);
+        let target: Message | null = null;
+        for (let i = messages.value.length - 1; i >= 0; i--) {
+          const m = messages.value[i];
+          if (m.role === "assistant" && !m.done && m.agentId === parsed.agentId && !m.isSwitchBanner) {
+            target = m;
+            break;
           }
-          break;
         }
+        if (target) {
+          target.content += parsed.delta;
+        } else {
+          messages.value.push({ role: "assistant", content: parsed.delta, agentId: parsed.agentId, done: false });
+        }
+        scrollBottom();
+        break;
+      }
+
+      case "tool_start": {
+        const parsed = JSON.parse(data);
+        agentToolStatus.value[parsed.agentId] = parsed.name;
+        let target: Message | null = null;
+        for (let i = messages.value.length - 1; i >= 0; i--) {
+          const m = messages.value[i];
+          if (m.role === "assistant" && !m.done && m.agentId === parsed.agentId && !m.isSwitchBanner) {
+            target = m;
+            break;
+          }
+        }
+        if (target) {
+          if (!target.toolCalls) target.toolCalls = [];
+          target.toolCalls.push({
+            name: parsed.name,
+            input: parsed.input,
+            status: "running",
+          });
+        }
+        break;
+      }
+
+      case "tool_end": {
+        const parsed = JSON.parse(data);
+        agentToolStatus.value[parsed.agentId] = null;
+        let target: Message | null = null;
+        for (let i = messages.value.length - 1; i >= 0; i--) {
+          const m = messages.value[i];
+          if (m.role === "assistant" && !m.done && m.agentId === parsed.agentId && !m.isSwitchBanner) {
+            target = m;
+            break;
+          }
+        }
+        if (target?.toolCalls) {
+          for (let tc = target.toolCalls.length - 1; tc >= 0; tc--) {
+            if (target.toolCalls[tc].name === parsed.name && target.toolCalls[tc].status === "running") {
+              target.toolCalls[tc].result = parsed.result;
+              target.toolCalls[tc].status = "done";
+              try {
+                const r = JSON.parse(parsed.result);
+                target.toolCalls[tc].isError = r.status === "error" || !!r.error;
+              } catch { /* non-JSON, ok */ }
+              break;
+            }
+          }
+        }
+        break;
+      }
+
+      case "agent_switch": {
+        const parsed = JSON.parse(data);
+        const last = messages.value[messages.value.length - 1];
+        if (last?.role === "assistant" && !last.done) last.done = true;
+        const label = TAG_LABEL[parsed.agentId] || parsed.agentId;
+        const verb = AGENT_VERB[parsed.agentId] || "接管处理";
+        messages.value.push({
+          role: "assistant",
+          content: `→ ${label} ${verb}`,
+          agentId: parsed.agentId,
+          done: true,
+          isSwitchBanner: true,
+        });
+        messages.value.push({ role: "assistant", content: "", agentId: parsed.agentId, done: false });
+        scrollBottom();
+        break;
+      }
+
+      case "done": {
+        const last = messages.value[messages.value.length - 1];
+        if (last) last.done = true;
+        streaming.value = false;
+        resetToolStatus();
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.trace_id) traceId.value = parsed.trace_id;
+        } catch { /* ignore */ }
+        abortController = null;
+        emit("noteSaved");
+        break;
+      }
+
+      case "error": {
+        console.error("SSE error:", data);
+        const last = messages.value[messages.value.length - 1];
+        if (last) last.done = true;
+        streaming.value = false;
+        resetToolStatus();
+        abortController = null;
+        break;
       }
     }
-  });
+  }
 
-  eventSource.addEventListener("agent_switch", (e) => {
-    const data = JSON.parse(e.data);
-    // 关闭上一条消息
-    const last = messages.value[messages.value.length - 1];
-    if (last?.role === "assistant" && !last.done) last.done = true;
-
-    const label = TAG_LABEL[data.agentId] || data.agentId;
-    const verb = AGENT_VERB[data.agentId] || "接管处理";
-
-    // 插入切换分隔条
-    messages.value.push({
-      role: "assistant",
-      content: `→ ${label} ${verb}`,
-      agentId: data.agentId,
-      done: true,
-      isSwitchBanner: true,
+  // 发起 POST 请求 + 流式读取
+  fetch("/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ input: userInput, session_id: sessionId }),
+    signal: abortController.signal,
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const reader = response.body!.getReader();
+      await readSSEStream(reader, handleEvent, abortController!.signal);
+    })
+    .catch((err) => {
+      if (err.name === "AbortError") return; // 用户主动中断，静默
+      console.error("Stream fetch error:", err);
+      const last = messages.value[messages.value.length - 1];
+      if (last) last.done = true;
+      streaming.value = false;
+      resetToolStatus();
+      abortController = null;
     });
-
-    // 再创建接收 token 的空气泡
-    messages.value.push({ role: "assistant", content: "", agentId: data.agentId, done: false });
-    scrollBottom();
-  });
-
-  eventSource.addEventListener("done", (e) => {
-    const last = messages.value[messages.value.length - 1];
-    if (last) last.done = true;
-    streaming.value = false;
-    resetToolStatus();
-    try {
-      const data = JSON.parse(e.data);
-      if (data.trace_id) traceId.value = data.trace_id;
-    } catch { /* ignore */ }
-    eventSource?.close();
-    emit("noteSaved");
-  });
-
-  eventSource.onerror = () => {
-    const last = messages.value[messages.value.length - 1];
-    if (last) last.done = true;
-    streaming.value = false;
-    resetToolStatus();
-    eventSource?.close();
-  };
-
-  input.value = "";
 }
 
 function abortStream() {
-  eventSource?.close();
+  abortController?.abort();
+  abortController = null;
   streaming.value = false;
   resetToolStatus();
   const last = messages.value[messages.value.length - 1];
@@ -306,7 +394,7 @@ function sendWithText(text: string) {
 defineExpose({ sendWithText });
 
 onUnmounted(() => {
-  eventSource?.close();
+  abortController?.abort();
 });
 </script>
 

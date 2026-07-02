@@ -47,28 +47,15 @@ def get_conn():
     return _conn
 
 
-# ── GET /chat/stream ──────────────────────────────────────
-@router.get("/chat/stream")
-async def chat_stream(
-    input: str = "",
-    session_id: str = "",
-    prompt_version: str = "v1",
-):
-    if not input:
-        async def empty_gen():
-            yield {"event": "error", "data": "input is required"}
-        return EventSourceResponse(empty_gen())
-
-    sid = session_id or str(uuid.uuid4())
-    tid = str(uuid.uuid4())  # trace_id — 贯穿本次请求所有 LLM 调用
-
+# ── Shared SSE event generator ─────────────────────────────
+def _build_sse_generator(user_input: str, session_id: str, prompt_version: str, trace_id: str):
+    """构建 SSE 事件生成器，GET 和 POST 共用。"""
     async def event_generator():
-        # 每个 SSE 流创建独立连接，避免多流并发写同一连接导致 database is locked
         from src.db.schema import get_conn as new_conn
         stream_conn = new_conn()
         from src.agent.router import route_serial
         try:
-            async for event in route_serial(input, sid, conn=stream_conn, prompt_version=prompt_version, trace_id=tid):
+            async for event in route_serial(user_input, session_id, conn=stream_conn, prompt_version=prompt_version, trace_id=trace_id):
                 etype = event.get("type")
 
                 if etype == "token":
@@ -117,7 +104,7 @@ async def chat_stream(
                     # 只透传 route_serial 的最终 done（携带完整 trace_id）
                     if not event.get("trace_id"):
                         continue
-                    yield {"event": "done", "data": json.dumps({"session_id": sid, "trace_id": event.get("trace_id", "")})}
+                    yield {"event": "done", "data": json.dumps({"session_id": session_id, "trace_id": event.get("trace_id", "")})}
 
                 elif etype == "error":
                     yield {"event": "error", "data": event.get("message", "unknown error")}
@@ -127,7 +114,45 @@ async def chat_stream(
         finally:
             stream_conn.close()
 
-    return EventSourceResponse(event_generator())
+    return event_generator()
+
+
+class ChatStreamBody(BaseModel):
+    input: str
+    session_id: str = ""
+    prompt_version: str = "v1"
+
+
+# ── POST /chat/stream ─────────────────────────────────────
+@router.post("/chat/stream")
+async def chat_stream_post(body: ChatStreamBody):
+    """POST 版本 — input 在 body 中，避免长文本导致 URL 截断 → 431。"""
+    if not body.input:
+        async def empty_gen():
+            yield {"event": "error", "data": "input is required"}
+        return EventSourceResponse(empty_gen())
+
+    sid = body.session_id or str(uuid.uuid4())
+    tid = str(uuid.uuid4())
+    return EventSourceResponse(_build_sse_generator(body.input, sid, body.prompt_version, tid))
+
+
+# ── GET /chat/stream（保留兼容）────────────────────────────
+@router.get("/chat/stream")
+async def chat_stream_get(
+    input: str = "",
+    session_id: str = "",
+    prompt_version: str = "v1",
+):
+    """GET 版本 — 保留兼容，短文本仍可用。"""
+    if not input:
+        async def empty_gen():
+            yield {"event": "error", "data": "input is required"}
+        return EventSourceResponse(empty_gen())
+
+    sid = session_id or str(uuid.uuid4())
+    tid = str(uuid.uuid4())
+    return EventSourceResponse(_build_sse_generator(input, sid, prompt_version, tid))
 
 
 # ── GET /notes ────────────────────────────────────────────

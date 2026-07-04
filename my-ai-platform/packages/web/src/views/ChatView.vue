@@ -71,7 +71,21 @@ const input = ref("");
 const streaming = ref(false);
 const activeTag = computed(() => parseTag(input.value));
 const messagesEl = ref<HTMLElement | null>(null);
+const userScrolledUp = ref(false);
 let abortController: AbortController | null = null;
+
+// ── 智能滚动：用户手动上滚时暂停自动追底 ──
+const SCROLL_BOTTOM_THRESHOLD = 48; // px，离底部此范围内视为"在底部"
+
+function isNearBottom(): boolean {
+  const el = messagesEl.value;
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_BOTTOM_THRESHOLD;
+}
+
+function onMessagesScroll() {
+  userScrolledUp.value = !isNearBottom();
+}
 
 // ── Stale watchdog（审计 A2）──
 // 30 秒内无新 SSE token/事件 → 显示"连接可能已断开"提示
@@ -158,10 +172,11 @@ const runningAgents = computed(() => {
     });
 });
 
-async function scrollBottom() {
+async function scrollBottom(force = false) {
   await nextTick();
-  if (messagesEl.value) {
+  if (messagesEl.value && (force || !userScrolledUp.value)) {
     messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+    userScrolledUp.value = false;
   }
 }
 
@@ -251,7 +266,7 @@ function sendMessage() {
   traceData.value = null;
   traceExpanded.value = false;
   input.value = "";
-  scrollBottom();
+  scrollBottom(true);
 
   abortController = new AbortController();
 
@@ -469,7 +484,7 @@ onUnmounted(() => {
     </div>
 
     <!-- 消息列表 -->
-    <div ref="messagesEl" class="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+    <div ref="messagesEl" class="flex-1 overflow-y-auto px-5 py-4 space-y-5" @scroll="onMessagesScroll">
       <!-- 空状态 -->
       <div v-if="!messages.length" class="flex flex-col items-center justify-center h-full gap-3 text-center">
         <div class="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center">
@@ -604,6 +619,22 @@ onUnmounted(() => {
           </div>
         </div>
       </template>
+    </div>
+
+    <!-- 滚动到底部浮钮：用户上滚阅读历史时出现 -->
+    <div
+      v-if="userScrolledUp && streaming"
+      class="flex justify-center -mt-3 pb-1 shrink-0"
+    >
+      <button
+        class="px-3 py-1 rounded-full bg-white/10 hover:bg-white/15 border border-white/[0.08] text-xs text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1"
+        @click="scrollBottom(true)"
+      >
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7-7-7" />
+        </svg>
+        回到底部
+      </button>
     </div>
 
     <!-- Trace 摘要条 -->

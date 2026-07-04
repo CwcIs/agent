@@ -27,6 +27,11 @@ from langchain_core.tools import tool
 from src.lib.embeddings import upsert_embedding, search_similar
 
 
+# ── 工具调用超时（审计 R1）──
+# 每次异步工具调用配 asyncio.wait_for(timeout=10s)，
+# 防止 search_notes / synthesize_notes 慢查询永久挂住。
+TOOL_TIMEOUT = 10  # 秒
+
 # 持有后台任务引用，防止被 GC 取消导致 embedding 静默丢失
 _background_tasks: set[asyncio.Task] = set()
 
@@ -104,12 +109,14 @@ def make_tools(conn: sqlite3.Connection) -> list:
         搜索笔记库，返回最多 k 条相关笔记（JSON 字符串）。
         优先使用语义向量搜索；若向量表为空则 fallback 到关键词检索。
         只返回 status='live' 的笔记。
+        每篇笔记内容截断至 300 字，防止大笔记库撑爆上下文（审计 A1）。
         """
+        k = min(k, 10)  # 上限 10 条，防止大结果集撑爆上下文
         results = []
 
-        # 尝试向量搜索
+        # 尝试向量搜索（审计 R1：asyncio.wait_for 超时 10s）
         try:
-            hits = await search_similar(conn, query, k)
+            hits = await asyncio.wait_for(search_similar(conn, query, k), timeout=TOOL_TIMEOUT)
             if hits:
                 ids = [h["note_id"] for h in hits]
                 placeholders = ",".join("?" * len(ids))
@@ -122,8 +129,12 @@ def make_tools(conn: sqlite3.Connection) -> list:
                 rows_sorted = sorted(rows, key=lambda r: id_order.get(dict(r)["id"], 999))
                 for r in rows_sorted:
                     d = dict(r)
+                    raw = d.get("content", "")
+                    d["content"] = raw[:300] + ("..." if len(raw) > 300 else "")
                     d["tags"] = json.loads(d.pop("tags_json", "[]"))
                     results.append(d)
+        except asyncio.TimeoutError:
+            return json.dumps({"status": "error", "message": f"向量搜索超时（>{TOOL_TIMEOUT}s），请缩小查询范围重试"}, ensure_ascii=False)
         except Exception:
             pass
 
@@ -147,6 +158,8 @@ def make_tools(conn: sqlite3.Connection) -> list:
                 ).fetchall()
                 for r in rows:
                     d = dict(r)
+                    raw = d.get("content", "")
+                    d["content"] = raw[:300] + ("..." if len(raw) > 300 else "")
                     d["tags"] = json.loads(d.pop("tags_json", "[]"))
                     results.append(d)
             except Exception:
@@ -292,10 +305,12 @@ def make_tools(conn: sqlite3.Connection) -> list:
         from src.lib.embeddings import search_similar
         from src.agent.providers.deepseek import make_deepseek
 
-        # 向量搜索相关笔记
+        # 向量搜索相关笔记（审计 R1：asyncio.wait_for 超时）
         try:
-            hits = await search_similar(conn, topic, k)
+            hits = await asyncio.wait_for(search_similar(conn, topic, k), timeout=TOOL_TIMEOUT)
             ids = [h["note_id"] for h in hits]
+        except asyncio.TimeoutError:
+            return json.dumps({"status": "error", "message": f"向量搜索超时（>{TOOL_TIMEOUT}s），请缩小话题范围重试"}, ensure_ascii=False)
         except Exception:
             ids = []
 
@@ -348,12 +363,15 @@ def make_tools(conn: sqlite3.Connection) -> list:
             return resp.content
 
         try:
-            text = await _call()
+            # 审计 R1：LLM 调用加超时
+            text = await asyncio.wait_for(_call(), timeout=TOOL_TIMEOUT)
 
             text = text.strip()
             if text.startswith("```"):
                 text = text.split("\n", 1)[1].rsplit("```", 1)[0]
             parsed = json.loads(text)
+        except asyncio.TimeoutError:
+            parsed = {"narrative": f"综合分析 LLM 调用超时（>{TOOL_TIMEOUT}s），请稍后重试", "gaps": []}
         except Exception as e:
             parsed = {"narrative": f"综合分析生成失败：{e}", "gaps": []}
 

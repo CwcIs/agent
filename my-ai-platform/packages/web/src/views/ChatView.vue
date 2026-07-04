@@ -73,6 +73,28 @@ const activeTag = computed(() => parseTag(input.value));
 const messagesEl = ref<HTMLElement | null>(null);
 let abortController: AbortController | null = null;
 
+// ── Stale watchdog（审计 A2）──
+// 30 秒内无新 SSE token/事件 → 显示"连接可能已断开"提示
+const STALE_TIMEOUT_MS = 30_000;
+let staleTimer: ReturnType<typeof setTimeout> | null = null;
+const showStaleWarning = ref(false);
+
+function resetStaleTimer() {
+  if (staleTimer) clearTimeout(staleTimer);
+  showStaleWarning.value = false;
+  staleTimer = setTimeout(() => {
+    showStaleWarning.value = true;
+  }, STALE_TIMEOUT_MS);
+}
+
+function clearStaleTimer() {
+  if (staleTimer) {
+    clearTimeout(staleTimer);
+    staleTimer = null;
+  }
+  showStaleWarning.value = false;
+}
+
 // ── Trace 面板 ──
 const traceId = ref<string | null>(null);
 const traceExpanded = ref(false);
@@ -231,6 +253,7 @@ function sendMessage() {
 
   // 事件处理 — 与原来 EventSource 的 addEventListener 逻辑完全一致
   function handleEvent(eventType: string, data: string) {
+    resetStaleTimer();
     switch (eventType) {
       case "token": {
         const parsed = JSON.parse(data);
@@ -319,6 +342,7 @@ function sendMessage() {
       }
 
       case "done": {
+        clearStaleTimer();
         const last = messages.value[messages.value.length - 1];
         if (last) last.done = true;
         streaming.value = false;
@@ -333,6 +357,7 @@ function sendMessage() {
       }
 
       case "error": {
+        clearStaleTimer();
         console.error("SSE error:", data);
         const last = messages.value[messages.value.length - 1];
         if (last) last.done = true;
@@ -345,6 +370,7 @@ function sendMessage() {
   }
 
   // 发起 POST 请求 + 流式读取
+  resetStaleTimer();  // 审计 A2：从请求发起即开始计时
   fetch("/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -359,6 +385,7 @@ function sendMessage() {
       await readSSEStream(reader, handleEvent, abortController!.signal);
     })
     .catch((err) => {
+      clearStaleTimer();
       if (err.name === "AbortError") return; // 用户主动中断，静默
       console.error("Stream fetch error:", err);
       const last = messages.value[messages.value.length - 1];
@@ -370,6 +397,7 @@ function sendMessage() {
 }
 
 function abortStream() {
+  clearStaleTimer();
   abortController?.abort();
   abortController = null;
   streaming.value = false;
@@ -394,6 +422,7 @@ function sendWithText(text: string) {
 defineExpose({ sendWithText });
 
 onUnmounted(() => {
+  clearStaleTimer();
   abortController?.abort();
 });
 </script>
@@ -415,6 +444,23 @@ onUnmounted(() => {
           />
         </span>
         <span class="text-gray-400">{{ runningAgents.join('  ·  ') }}</span>
+      </div>
+    </div>
+
+    <!-- Stale 看门狗警告（审计 A2）-->
+    <div
+      v-if="showStaleWarning && streaming"
+      class="px-5 py-2 bg-amber-500/8 border-b border-amber-500/15 shrink-0"
+    >
+      <div class="flex items-center gap-2 text-xs text-amber-400">
+        <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.94-1.24 2.502-2.784a10.5 10.5 0 00-5.864-6.535M12 3.75A10.5 10.5 0 0117.364 18H6.636A10.5 10.5 0 0112 3.75z" />
+        </svg>
+        <span>连接可能已断开，超过 {{ STALE_TIMEOUT_MS / 1000 }} 秒未收到响应</span>
+        <button
+          class="ml-auto text-amber-500 hover:text-amber-400 underline underline-offset-2"
+          @click="abortStream"
+        >中断重试</button>
       </div>
     </div>
 

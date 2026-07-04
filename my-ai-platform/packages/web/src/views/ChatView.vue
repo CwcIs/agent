@@ -189,6 +189,10 @@ async function readSSEStream(
 
       buffer += decoder.decode(value, { stream: true });
 
+      // sse-starlette 按 RFC 用 \r\n\r\n 分隔事件，
+      // 统一归一化为 \n 后再解析，兼容两种换行符。
+      buffer = buffer.replace(/\r\n/g, "\n");
+
       // SSE 事件以 \n\n 分隔
       const parts = buffer.split("\n\n");
       // 最后一个可能不完整，留到下次

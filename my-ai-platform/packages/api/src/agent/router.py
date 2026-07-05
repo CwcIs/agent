@@ -137,7 +137,8 @@ async def route_serial(
             mark_done(conn, wid)
 
     # 第一跳：通过 assemble_context 按优先级 + token 预算加载历史
-    history = assemble_context(conn, session_id) if conn else []
+    # 同时注入相关笔记（Context 改造 — Phase 4）
+    history = assemble_context(conn, session_id, user_input=cleaned_input) if conn else []
     first_messages = history + [HumanMessage(content=cleaned_input)]
 
     # 持久化用户消息（在 assemble 之后，避免重复出现在历史中）

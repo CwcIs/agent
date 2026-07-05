@@ -1,3 +1,75 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ── Thought Cockpit 色彩系统 ── */
+:root {
+  --bg-root: #0F1115;
+  --bg-panel: #171A21;
+  --bg-card: #20242D;
+  --border-subtle: #2C3240;
+  --text-main: #F4F6FA;
+  --text-muted: #9AA4B2;
+
+  --agent-knowledge: #7C9CFF;
+  --agent-review: #FFB86B;
+  --agent-brain: #B88CFF;
+
+  --color-success: #70E0A3;
+  --color-warning: #FFD166;
+  --color-danger: #FF6B6B;
+}
+
+/* ── 基础重置 ── */
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg-root); }
+
+/* ── 滚动条 ── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+
+/* ── 侧栏过渡 ── */
+.sidebar-enter-active,
+.sidebar-leave-active {
+  transition: width 0.2s ease, opacity 0.2s ease;
+  overflow: hidden;
+}
+.sidebar-enter-from,
+.sidebar-leave-to {
+  width: 0;
+  opacity: 0;
+}
+.sidebar-enter-to,
+.sidebar-leave-from {
+  width: 240px;
+  opacity: 1;
+}
+
+/* ── 淡入动画 ── */
+.animate-fade-in {
+  animation: fadeIn 0.2s ease;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── 脉冲闪烁（Agent 工作中） ── */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+.animate-pulse-glow {
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+/* ── 滑入 ── */
+@keyframes slideInRight {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.animate-slide-in-right {
+  animation: slideInRight 0.25s ease;
+}

@@ -114,13 +114,101 @@ Phase 4           Phase 5           Phase 6           Phase 7           Phase 8
 3. **成本意识**：LLM 调用按场景分级——高频操作用 cheap model，深度分析用 capable model。
 4. **渐进式复杂度**：默认简单方案（规则/统计），只在数据证明需要时才上 LLM。
 5. **不破坏现有 evals**：每个 Phase 结束时 golden 集通过率不得低于当前基线。
+6. **可信关系优先于炫酷可视化**：先把 `edges` 的来源、置信度、确认状态做扎实，再做 GraphView / 碰撞洞察。
+7. **安全前置，不等 Phase 8**：凡是引入外部 URL、用户自定义工具、代码执行、插件加载的功能，必须在对应 Phase 内同时完成最小安全边界。
+
+### 跨 Phase 核心链路：图谱 + 贝叶斯排序 + 衰减模型
+
+Phase 4-8 的知识能力不应只是"多几个工具"，而要形成一条统一的检索排序链路：
+
+```
+用户输入 / 新笔记 / 外部导入
+  → notes 入库
+  → FTS + embedding 候选召回
+  → Knowledge Graph 一跳/二跳邻居扩展
+  → Bayesian Ranker 计算历史有效性
+  → Time Decay / Reactivation 调整新旧权重
+  → assemble_context() 注入 Agent 上下文
+  → Agent 回答 / Digest / Collision
+  → retrieval_events 记录反馈
+  → note_stats / edges confidence 反哺更新
+```
+
+核心分工：
+
+| 模块 | 负责什么 | 不负责什么 |
+|------|----------|------------|
+| FTS / embedding | 找候选笔记 | 不直接决定最终上下文顺序 |
+| Knowledge Graph | 提供结构关系、邻居扩展、矛盾/演化路径 | 不把 suggested 关系当事实 |
+| Bayesian Ranker | 根据历史反馈判断"这条笔记过去是否有用" | 不替代语义相关性 |
+| Time Decay | 让长期未激活的知识自然降权 | 不永久埋掉旧知识 |
+| Reactivation | 被引用、复习、连接后重新抬升权重 | 不自动改写用户原始笔记 |
+
+第一版排序公式保持透明，先不用训练模型：
+
+```
+final_score =
+  semantic_score  * 0.35 +
+  keyword_score   * 0.15 +
+  graph_score     * 0.20 +
+  bayesian_score  * 0.20 +
+  recency_score   * 0.10
+
+bayesian_score = (success_count + α) / (exposure_count + α + β)
+decay_score = exp(-λ * days_since_last_reinforced)
+```
+
+事件定义：
+
+| 事件 | 含义 | 影响 |
+|------|------|------|
+| `shown` | 笔记被检索候选展示给 Agent | exposure_count +1 |
+| `cited` | Agent 最终回答引用该笔记 | success_count +1，刷新 last_reinforced_at |
+| `clicked` | 用户打开该笔记 | success_count +1，刷新 last_accessed_at |
+| `accepted` | 用户接受关系/洞察建议 | 强化 note 与 edge |
+| `rejected` | 用户拒绝关系/洞察建议 | 降低 edge confidence |
+| `saved_from` | 由该笔记发展出新笔记 | 强化 evolved_from / related 链路 |
+
+Agent 场景权重不同：
+
+| Agent | 排序偏好 |
+|-------|----------|
+| KnowledgeAgent | `similar` / `wikilink` / `evolved_from`，偏高相关和可引用 |
+| ReviewAgent | `contradicts` / `supersedes`，偏冲突、漏洞和反例 |
+| BrainAgent | weak ties，偏低相似但有桥接价值的远邻 |
+
+落地顺序：
+
+1. **Phase 4A 先记录 retrieval_events**：没有反馈事件，就没有贝叶斯排序的燃料。
+2. **Phase 4A/4B 聚合 note_stats**：先做简单计数和时间戳，不急着复杂模型。
+3. **Phase 4B 引入统一 ranker**：把 `search_notes` / `assemble_context()` 的结果改成多因子排序。
+4. **Phase 4C 再接入图谱扩散**：从 top notes 拉一跳邻居，再交给 ranker。
+5. **Phase 6 接入衰减与复习**：复习、digest、写作提示都基于同一套激活/衰减信号。
 
 ---
 
 ## 3. Phase 4：知识生态深化
 
 > **目标**：让笔记之间的关系从"被动记录"变成"主动发现"，让知识图谱从静态存储变成动态生长。
-> **锚点**：关系图谱自动发现 + 可视化 + Idea Collision 升级 + 标签智能 + Daily Digest 2.0
+> **锚点**：可信关系层 + 自动关系建议 + Idea Collision 升级 + 标签智能 + Daily Digest 2.0
+
+### Phase 4 调整后的落地顺序
+
+Phase 4 不再一口气追求完整 GraphView，而是先建立"可信关系层"：
+
+1. **Phase 4A：可信关系层（优先）**
+   - 升级 `edges` schema：补齐 `confidence` / `source` / `evidence` / `status`
+   - 支持 `similar` 关系，或明确把语义相似统一映射到 `related`
+   - 建立 `pending_suggestions`，让自动发现的关系先进入"待确认"状态
+   - 在笔记详情里展示局部关系，而不是先做全局力导向图
+
+2. **Phase 4B：Idea Collision（第二优先级）**
+   - 先做手动触发 + Daily Digest 展示
+   - 暂不在每次 `save_note` 后强制调用 LLM，避免成本和延迟失控
+
+3. **Phase 4C：GraphView / 可视化（可延后）**
+   - 等关系质量稳定后再做全局图谱
+   - 第一版只支持中心节点 BFS，不急着做全量图和复杂交互
 
 ### 4.1 关系图谱自动发现（4.1）
 
@@ -138,16 +226,25 @@ Phase 4           Phase 5           Phase 6           Phase 7           Phase 8
 | `contradicts` | 两篇笔记对同一话题持相反观点 | LLM 批处理（每日 digest 时顺带检测） |
 | `evolved_from` | 新笔记显式覆盖/更新旧笔记 | 用户在 save 时传 `supersedes_id` 参数 |
 
+> 注意：当前 `edges.relation` 的 CHECK 约束尚不包含 `similar`。实现前必须先迁移 schema，或决定把语义相似统一写为 `related`，并用 `source='embedding'` 区分来源。
+
 #### 实现计划
 
 ```
 后端改动:
+  edges schema 升级:
+    + relation 支持 similar（或明确沿用 related）
+    + confidence REAL DEFAULT 1.0
+    + source TEXT CHECK(source IN ('manual','wikilink','embedding','llm','system'))
+    + evidence TEXT DEFAULT ''        # 为什么建立这条边
+    + status TEXT CHECK(status IN ('confirmed','suggested','rejected'))
+
   save_note 工具:
     + supersedes_id 可选参数 → 自动创建 evolved_from edge
 
   _background_embed 升级:
     + 向量写入后 → 计算与新笔记最相似的 top 5 已有笔记
-    + 相似度 > 0.75 → 自动创建 similar edge
+    + 相似度 > 0.82 → 创建 suggested similar edge（不直接 confirmed）
     + 相似度 0.5-0.75 → 存入 pending_suggestions 表，等用户确认
 
   daily_digest.py 升级:
@@ -157,7 +254,7 @@ Phase 4           Phase 5           Phase 6           Phase 7           Phase 8
 
   schema 新增:
     pending_suggestions 表:
-      id / from_id / to_id / relation / confidence / status / created_at
+      id / from_id / to_id / relation / confidence / evidence / status / created_at / decided_at
       status ∈ {pending, accepted, rejected}
 
 新增工具:
@@ -167,10 +264,12 @@ Phase 4           Phase 5           Phase 6           Phase 7           Phase 8
 前端改动:
   笔记详情面板增加"关系"tab
   展示 outgoing / incoming edges，按关系类型分组
+  对 suggested 关系展示"接受 / 忽略"按钮
 ```
 
 #### 验收标准
 - [ ] `similar` edge 自动创建可复现（save_note → 查 edges 表有记录）
+- [ ] `edges` 支持 confidence/source/evidence/status，自动发现的关系默认不是 confirmed
 - [ ] `contradicts` 在 daily digest 中至少出现 1 次（需 ≥2 篇语义相似但观点不同的笔记）
 - [ ] `evolved_from` 通过 `supersedes_id` 参数创建
 - [ ] pending_suggestions 表写入 + accept/reject 流程跑通
@@ -186,6 +285,10 @@ Phase 4           Phase 5           Phase 6           Phase 7           Phase 8
 前端新页面: src/views/GraphView.vue
 
 技术选型: D3.js force simulation（轻量，不引入重型图数据库）
+
+范围调整:
+  GraphView 不作为 Phase 4 第一刀。
+  先做笔记详情里的"局部关系面板"；等 4.1 的关系质量稳定后，再做全局图谱。
 
 功能:
   1. 节点 = 笔记（大小 = 连接数，颜色 = 标签分组）
@@ -222,9 +325,9 @@ Phase 4           Phase 5           Phase 6           Phase 7           Phase 8
 
 ```
 碰撞触发时机:
-  1. save_note 时：新笔记 vs 已有笔记库，找意外关联
+  1. 用户手动触发："帮我发现意外关联"（第一版优先）
   2. daily digest 时：批量扫描最近 7 天笔记对
-  3. 用户手动触发："帮我发现意外关联"
+  3. save_note 时：仅做候选对缓存，不默认调用 LLM
 
 碰撞算法:
   Phase A — 候选对生成（便宜，不用 LLM）:
@@ -233,6 +336,7 @@ Phase 4           Phase 5           Phase 6           Phase 7           Phase 8
     3. 时间相近 + 标签不同（同一天记的不同话题）
 
   Phase B — LLM 碰撞评分（贵，只对候选对调用）:
+    只对 top 3-5 候选调用，避免每次保存笔记导致成本膨胀。
     prompt: "以下是两篇笔记，它们是否有意外关联？
             - 表面无关但底层相似的模式
             - 互相矛盾的观点
@@ -258,7 +362,8 @@ schema 新增:
 ```
 
 #### 验收标准
-- [ ] save_note 触发碰撞检测（后台异步）
+- [ ] 手动触发碰撞检测可返回结果
+- [ ] daily digest 可复用碰撞检测结果
 - [ ] score ≥ 7 的碰撞存入 idea_collisions 表
 - [ ] DailyDigestPanel 展示本周碰撞发现
 - [ ] 手动"帮我发现意外关联"调用 detect_collisions 返回结果
@@ -399,9 +504,12 @@ schema 改动:
 
 安全:
   - URL 白名单/黑名单（防止 SSRF 打内网）
+  - 解析 DNS 后拒绝 localhost / 127.0.0.0/8 / 10.0.0.0/8 / 172.16.0.0/12 / 192.168.0.0/16 / link-local / IPv6 local
+  - 跟随重定向时每一跳都重新做 SSRF 校验
   - 请求超时 15s
   - 内容大小上限 5MB
   - 只抓 text/html，拒绝 binary
+  - 存 content_hash，避免重复导入同一来源内容
 
 新增 API:
   POST /notes/import/web
@@ -797,9 +905,14 @@ Python 库: caldav（纯 Python CalDAV 客户端）
     / enabled / created_at
 
 工具执行:
-  make_tools() 加载 custom_tools 表 → 动态生成 LangChain Tool
+  make_tools() 加载 enabled 的 custom_tools 表 → 动态生成 LangChain Tool
   参数中的 $VAR 从环境变量替换
   调用时用 httpx 发请求 → 按 output_template 格式化返回
+  第一版只允许 GET / POST JSON，不允许任意脚本、不允许访问内网地址
+
+与插件系统关系:
+  7.3 是"安全受限的 HTTP 工具模板"，不是完整插件系统。
+  8.4 插件系统如果继续做，应复用这里的工具注册/权限模型，避免两套扩展机制分叉。
 
 前端:
   工具管理页面：新增 / 编辑 / 启用 / 禁用 / 测试
@@ -843,15 +956,19 @@ Agent 能运行 Python 代码片段，用于数据分析、图表生成、计算
   run_python(code: str) → 在 sandbox 中执行 Python 代码，返回 stdout/stderr
 
 Sandbox 设计:
-  - Docker 容器隔离（推荐）或 subprocess + 严格限制
+  - Docker 容器隔离（第一版唯一启用方案）
   - 超时 10s
   - 内存限制 256MB
   - 禁止网络访问
   - 禁止文件系统访问（除了 /tmp）
   - 预装: numpy, pandas, matplotlib
 
-  如果 Docker 不可用 → subprocess + 临时目录 + 资源限制
-  （Windows 上用 Job Object 限制进程资源）
+  如果 Docker 不可用 → 工具保持 disabled，不自动降级到 subprocess。
+  subprocess + Job Object 可作为未来实验，但不进入默认可用路径。
+
+启用方式:
+  RUN_PYTHON_ENABLED=false 默认关闭
+  只有显式开启且 Docker health check 通过时，Agent 才能看到 run_python 工具
 
 使用场景:
   "帮我分析这 10 条笔记的字数分布" → Agent 写 Python → 返回统计结果
@@ -992,6 +1109,12 @@ API:
   settings.json / .env 中配置 PLUGIN_DIRS
   启动时扫描所有 plugin.json → 动态注册
 
+安全边界:
+  插件系统默认关闭；只加载本地显式配置目录，不扫描任意路径。
+  插件 manifest 必须声明 capability：agent / tool / provider。
+  Tool 插件优先复用 7.3 的 HTTP 工具权限模型。
+  任意 Python 插件执行属于高风险能力，第一版仅支持开发者本地使用，不对普通用户暴露 UI 安装。
+
 优先级:
   Phase 8 做最小可用版本（Agent 插件 + Tool 插件）
   Provider 插件 + UI 市场 → 未来迭代
@@ -1002,6 +1125,10 @@ API:
 #### 实现计划
 
 ```
+原则:
+  Phase 8 做系统性补齐，但安全不能等到 Phase 8 才开始。
+  Phase 5/7/8 中任何外部输入或执行能力，都必须在对应功能 PR 内附带最小安全措施。
+
 清单:
   1. [ ] API key 管理 — 统一从 .env 加载，日志中脱敏
   2. [ ] 输入校验 — Pydantic model 校验所有 API 入参
@@ -1162,7 +1289,7 @@ Phase 4-8 不做:
 ## 附录 B：Schema 演进总览
 
 ```
-Phase 1-3 (9 表):
+Phase 1-3 (10 张 SQLite 对象；9 张业务/审计表 + 1 张 FTS 虚表):
   notes, notes_fts, messages, daily_digests,
   llm_calls, llm_errors, eval_runs, embedding_meta,
   edges, worklist
@@ -1171,6 +1298,10 @@ Phase 4 新增:
   pending_suggestions  — 关系建议（待用户确认）
   idea_collisions      — 意外关联发现
   tag_aliases          — 标签同义词
+  retrieval_events     — 检索反馈事件（shown/cited/clicked/accepted/rejected/saved_from）
+  note_stats           — 笔记排序统计（exposure/success/last_accessed/last_reinforced）
+  edges 增加列:
+    confidence / source / evidence / status / last_reinforced_at
 
 Phase 5 新增:
   source_trace         — 外部来源追踪

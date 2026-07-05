@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, inject } from "vue";
+import NoteCard from "../components/NoteCard.vue";
 
 interface Note {
   id: string;
@@ -19,15 +20,14 @@ const emit = defineEmits<{
 }>();
 
 const notes = ref<Note[]>([]);
-const filter = ref<"live" | "archived" | "all">("live");
+const filter = ref<"live" | "superseded" | "archived" | "all">("live");
 const searchQuery = ref("");
 const searchInputEl = ref<HTMLInputElement | null>(null);
 const loading = ref(false);
 
-// ── Toast (injected from App) ──
+// ── Toast ──
 const toast = inject<(msg: string, type?: "info" | "success" | "error") => void>("toast", () => {});
 
-// ── 暴露 focusSearch 供快捷键调用 ──
 function focusSearch() {
   searchInputEl.value?.focus();
 }
@@ -72,7 +72,30 @@ async function fetchNotes() {
 
 onMounted(fetchNotes);
 
-// ── 过滤 ──
+// ── 分组 ──
+const todayNotes = computed(() => {
+  const today = new Date().toDateString();
+  return notes.value.filter((n) => {
+    try { return new Date(n.created_at).toDateString() === today; }
+    catch { return false; }
+  });
+});
+
+const activeNotes = computed(() => {
+  return notes.value
+    .filter((n) => n.status === "live" && !todayNotes.value.includes(n))
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+});
+
+const supersededNotes = computed(() => {
+  return notes.value.filter((n) => n.status === "superseded");
+});
+
+const archivedNotes = computed(() => {
+  return notes.value.filter((n) => n.status === "archived");
+});
+
+// ── 过滤（用于搜索）──
 const filtered = computed(() => {
   let list = notes.value;
   if (filter.value !== "all") {
@@ -89,6 +112,9 @@ const filtered = computed(() => {
   }
   return list;
 });
+
+// 是否处于搜索模式
+const isSearching = computed(() => searchQuery.value.trim().length > 0);
 
 // ── 操作 ──
 function selectNote(note: Note) {
@@ -120,7 +146,7 @@ async function deleteNote(note: Note) {
     if (resp.ok) {
       notes.value = notes.value.filter((n) => n.id !== note.id);
       if (props.selectedId === note.id) {
-        emit("note-selected", null as unknown as Note); // 触发取消选中
+        emit("note-selected", null as unknown as Note);
       }
       toast(`「${note.title}」已删除`, "success");
     }
@@ -138,11 +164,28 @@ function formatDate(s: string) {
   return isNaN(d.getTime()) ? s : `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+function formatRelative(s: string): string {
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  const now = Date.now();
+  const diff = now - d.getTime();
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+  return formatDate(s);
+}
+
 function highlightMatches(text: string): string {
   if (!searchQuery.value.trim()) return text;
   const q = searchQuery.value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return text.replace(new RegExp(`(${q})`, "gi"), "<mark class='bg-indigo-500/30 text-indigo-200 rounded-sm px-0.5'>$1</mark>");
 }
+
+const SECTION_COLORS: Record<string, string> = {
+  Today: "#7C9CFF",
+  "Active Ideas": "#70E0A3",
+  Evolving: "#FFB86B",
+  Archived: "#9AA4B2",
+};
 </script>
 
 <template>
@@ -151,7 +194,8 @@ function highlightMatches(text: string): string {
     <div class="px-2 pt-2 pb-1">
       <div class="relative">
         <svg
-          class="w-3 h-3 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600 pointer-events-none"
+          class="w-3 h-3 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+          style="color: #9AA4B2; opacity: 0.4"
           fill="none" stroke="currentColor" viewBox="0 0 24 24"
         >
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -161,11 +205,15 @@ function highlightMatches(text: string): string {
           v-model="searchQuery"
           type="text"
           placeholder="搜索笔记… (Ctrl+K)"
-          class="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg pl-8 pr-3 py-1.5 text-xs text-gray-300 placeholder-gray-600 outline-none focus:border-indigo-500/30 focus:bg-white/[0.04] transition-colors"
+          class="w-full rounded-lg pl-8 pr-3 py-1.5 text-xs outline-none transition-colors border"
+          style="background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.06); color: #F4F6FA"
+          @focus="(e) => (e.target as HTMLInputElement).style.borderColor = 'rgba(124,156,255,0.3)'"
+          @blur="(e) => (e.target as HTMLInputElement).style.borderColor = 'rgba(255,255,255,0.06)'"
         />
         <button
           v-if="searchQuery"
-          class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-400"
+          class="absolute right-2 top-1/2 -translate-y-1/2"
+          style="color: #9AA4B2"
           @click="searchQuery = ''"
         >
           <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -175,80 +223,160 @@ function highlightMatches(text: string): string {
       </div>
     </div>
 
-    <!-- 过滤标签 -->
-    <div class="flex gap-1 px-2 pb-2">
-      <button
-        v-for="s in (['live', 'archived', 'all'] as const)"
-        :key="s"
-        :class="[
-          'px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors',
-          filter === s ? 'bg-white/10 text-gray-200' : 'text-gray-600 hover:text-gray-400',
-        ]"
-        @click="filter = s"
-      >{{ s === 'live' ? '有效' : s === 'archived' ? '归档' : '全部' }}</button>
-      <span class="ml-auto text-[10px] text-gray-700 self-center">{{ filtered.length }}</span>
-    </div>
+    <!-- 内容区 -->
+    <div class="flex-1 overflow-y-auto px-1.5 pb-2">
 
-    <!-- 列表 -->
-    <ul class="flex-1 overflow-y-auto px-1.5 pb-2 space-y-0.5">
-      <li
-        v-for="note in filtered"
-        :key="note.id"
-        class="group px-2.5 py-2 rounded-lg cursor-pointer transition-colors"
-        :class="[
-          selectedId === note.id
-            ? 'bg-indigo-500/10 border border-indigo-500/20'
-            : 'border border-transparent hover:bg-white/[0.03] hover:border-white/[0.04]',
-          note.status === 'archived' ? 'opacity-50' : '',
-        ]"
-        @click="selectNote(note)"
-        @contextmenu="onContextMenu($event, note)"
-      >
-        <div class="flex items-start justify-between gap-1.5">
-          <span
-            class="text-xs text-gray-300 leading-snug flex-1 line-clamp-2"
-            v-html="searchQuery ? highlightMatches(note.title) : note.title"
+      <!-- ──── 搜索模式：平铺列表 ──── -->
+      <template v-if="isSearching">
+        <ul class="space-y-0.5">
+          <li
+            v-for="note in filtered"
+            :key="note.id"
+            class="group px-2.5 py-2 rounded-lg cursor-pointer transition-colors border"
+            :class="[
+              selectedId === note.id
+                ? 'border-indigo-500/20'
+                : 'border-transparent hover:border-white/[0.04]',
+              note.status === 'archived' ? 'opacity-50' : '',
+            ]"
+            :style="{ background: selectedId === note.id ? 'rgba(124,156,255,0.08)' : 'transparent' }"
+            @click="selectNote(note)"
+            @contextmenu="onContextMenu($event, note)"
+          >
+            <div class="flex items-start justify-between gap-1.5">
+              <span
+                class="text-xs leading-snug flex-1 line-clamp-2"
+                style="color: #F4F6FA"
+                v-html="searchQuery ? highlightMatches(note.title) : note.title"
+              />
+              <span class="text-[9px] shrink-0 mt-0.5" style="color: #9AA4B2">{{ formatDate(note.created_at) }}</span>
+            </div>
+            <p v-if="note.content" class="text-[10px] mt-1 line-clamp-1 leading-relaxed" style="color: #9AA4B2">
+              {{ note.content.slice(0, 80) }}
+            </p>
+            <div v-if="note.tags?.length" class="flex gap-1 mt-1.5 flex-wrap">
+              <span
+                v-for="tag in note.tags"
+                :key="tag"
+                class="text-[9px] px-1.5 py-0.5 rounded-full border"
+                style="background: rgba(255,255,255,0.03); color: #9AA4B2; border-color: rgba(255,255,255,0.04)"
+              >{{ tag }}</span>
+            </div>
+          </li>
+        </ul>
+        <div v-if="!filtered.length" class="px-4 py-8 text-center">
+          <p class="text-xs" style="color: #9AA4B2">没有匹配的笔记</p>
+        </div>
+      </template>
+
+      <!-- ──── 正常模式：分组视图 ──── -->
+      <template v-else>
+        <!-- Today -->
+        <section v-if="todayNotes.length" class="mb-3">
+          <div class="flex items-center gap-2 px-2 pb-1.5">
+            <span class="w-1.5 h-1.5 rounded-full" :style="{ background: SECTION_COLORS['Today'] }" />
+            <span class="text-[10px] font-semibold uppercase tracking-wider" style="color: #9AA4B2">Today</span>
+            <span class="text-[9px] ml-auto" style="color: #9AA4B2; opacity: 0.5">{{ todayNotes.length }}</span>
+          </div>
+          <NoteCard
+            v-for="note in todayNotes"
+            :key="note.id"
+            :note="note"
+            :selected="selectedId === note.id"
+            @select="selectNote"
+            @contextmenu="onContextMenu($event, note)"
           />
-          <span class="text-[9px] text-gray-700 shrink-0 mt-0.5">{{ formatDate(note.created_at) }}</span>
-        </div>
-        <!-- 内容预览 -->
-        <p
-          v-if="note.content"
-          class="text-[10px] text-gray-600 mt-1 line-clamp-1 leading-relaxed"
-        >{{ note.content.slice(0, 80) }}</p>
-        <!-- 标签 -->
-        <div v-if="note.tags?.length" class="flex gap-1 mt-1.5 flex-wrap">
-          <span
-            v-for="tag in note.tags"
-            :key="tag"
-            class="text-[9px] px-1.5 py-0.5 rounded-full bg-white/[0.04] text-gray-500"
-          >{{ tag }}</span>
-        </div>
-      </li>
-    </ul>
+        </section>
 
-    <!-- 空状态 -->
-    <div v-if="!loading && !filtered.length" class="px-4 py-8 text-center">
-      <p class="text-xs text-gray-700">
-        {{ searchQuery ? '没有匹配的笔记' : filter === 'live' ? '还没有笔记，发送第一条消息开始' : '暂无笔记' }}
-      </p>
-    </div>
+        <!-- Active Ideas -->
+        <section v-if="activeNotes.length" class="mb-3">
+          <div class="flex items-center gap-2 px-2 pb-1.5">
+            <span class="w-1.5 h-1.5 rounded-full" :style="{ background: SECTION_COLORS['Active Ideas'] }" />
+            <span class="text-[10px] font-semibold uppercase tracking-wider" style="color: #9AA4B2">Active Ideas</span>
+            <span class="text-[9px] ml-auto" style="color: #9AA4B2; opacity: 0.5">{{ activeNotes.length }}</span>
+          </div>
+          <NoteCard
+            v-for="note in activeNotes"
+            :key="note.id"
+            :note="note"
+            :selected="selectedId === note.id"
+            @select="selectNote"
+            @contextmenu="onContextMenu($event, note)"
+          />
+        </section>
 
-    <!-- 加载 -->
-    <div v-if="loading" class="px-4 py-8 text-center">
-      <span class="text-xs text-gray-700 animate-pulse">加载中…</span>
+        <!-- Evolving (superseded) -->
+        <section v-if="supersededNotes.length" class="mb-3">
+          <div class="flex items-center gap-2 px-2 pb-1.5">
+            <span class="w-1.5 h-1.5 rounded-full" :style="{ background: SECTION_COLORS['Evolving'] }" />
+            <span class="text-[10px] font-semibold uppercase tracking-wider" style="color: #9AA4B2">Evolving</span>
+            <span class="text-[9px] ml-auto" style="color: #9AA4B2; opacity: 0.5">{{ supersededNotes.length }}</span>
+          </div>
+          <NoteCard
+            v-for="note in supersededNotes"
+            :key="note.id"
+            :note="note"
+            :selected="selectedId === note.id"
+            @select="selectNote"
+            @contextmenu="onContextMenu($event, note)"
+          />
+        </section>
+
+        <!-- Archived -->
+        <section v-if="archivedNotes.length">
+          <details class="group/section" open>
+            <summary class="flex items-center gap-2 px-2 pb-1.5 cursor-pointer select-none">
+              <span class="w-1.5 h-1.5 rounded-full" :style="{ background: SECTION_COLORS['Archived'] }" />
+              <span class="text-[10px] font-semibold uppercase tracking-wider" style="color: #9AA4B2">Archived</span>
+              <span class="text-[9px]" style="color: #9AA4B2; opacity: 0.5">{{ archivedNotes.length }}</span>
+              <svg class="w-2.5 h-2.5 ml-auto transition-transform group-open/section:rotate-180" style="color: #9AA4B2; opacity: 0.4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </summary>
+            <NoteCard
+              v-for="note in archivedNotes"
+              :key="note.id"
+              :note="note"
+              :selected="selectedId === note.id"
+              @select="selectNote"
+              @contextmenu="onContextMenu($event, note)"
+            />
+          </details>
+        </section>
+
+        <!-- 空状态 -->
+        <div v-if="!notes.length && !loading" class="px-4 py-12 text-center">
+          <div class="w-10 h-10 rounded-2xl mx-auto mb-3 flex items-center justify-center" style="background: rgba(255,255,255,0.02)">
+            <svg class="w-5 h-5" style="color: #9AA4B2; opacity: 0.3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+          </div>
+          <p class="text-xs" style="color: #9AA4B2">
+            还没有笔记
+          </p>
+          <p class="text-[10px] mt-1" style="color: #9AA4B2; opacity: 0.5">
+            发送第一条消息开始捕捉想法
+          </p>
+        </div>
+      </template>
+
+      <!-- 加载 -->
+      <div v-if="loading" class="px-4 py-8 text-center">
+        <span class="text-xs animate-pulse" style="color: #9AA4B2">加载中…</span>
+      </div>
     </div>
 
     <!-- 右键菜单 -->
     <Teleport to="body">
       <div
         v-if="contextMenu"
-        class="fixed z-50 min-w-[140px] py-1 bg-[#1a1a1a] border border-white/[0.08] rounded-xl shadow-2xl backdrop-blur-sm"
-        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        class="fixed z-50 min-w-[140px] py-1 rounded-xl shadow-2xl border"
+        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px', background: '#20242D', borderColor: '#2C3240' }"
         @click.stop
       >
         <button
-          class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-gray-400 hover:text-gray-200 hover:bg-white/[0.04] transition-colors text-left"
+          class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] transition-colors text-left hover:brightness-110"
+          style="color: #9AA4B2"
           @click="copyContent(contextMenu.note)"
         >
           <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -257,7 +385,8 @@ function highlightMatches(text: string): string {
           复制内容
         </button>
         <button
-          class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-gray-400 hover:text-gray-200 hover:bg-white/[0.04] transition-colors text-left"
+          class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] transition-colors text-left hover:brightness-110"
+          style="color: #9AA4B2"
           @click="archiveNote(contextMenu.note)"
         >
           <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -265,9 +394,10 @@ function highlightMatches(text: string): string {
           </svg>
           {{ contextMenu.note.status === 'archived' ? '取消归档' : '归档' }}
         </button>
-        <div class="h-px bg-white/[0.06] my-1" />
+        <div class="h-px my-1" style="background: rgba(255,255,255,0.06)" />
         <button
-          class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors text-left"
+          class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] transition-colors text-left hover:brightness-110"
+          style="color: #FF6B6B"
           @click="deleteNote(contextMenu.note)"
         >
           <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -279,3 +409,4 @@ function highlightMatches(text: string): string {
     </Teleport>
   </div>
 </template>
+

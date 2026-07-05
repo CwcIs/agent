@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from "vue";
+import { ref, watch, nextTick, computed } from "vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 
@@ -42,6 +42,14 @@ const RELATION_LABELS: Record<string, string> = {
   supersedes: "取代",
   contradicts: "矛盾",
   related: "相关",
+};
+
+const RELATION_COLORS: Record<string, string> = {
+  wikilink: "#7C9CFF",
+  evolved_from: "#70E0A3",
+  supersedes: "#FFB86B",
+  contradicts: "#FF6B6B",
+  related: "#9AA4B2",
 };
 
 // ── 编辑模式 ──
@@ -124,6 +132,16 @@ watch(
   { immediate: true },
 );
 
+// ── Context Radar sections ──
+const activeTab = ref<"referenced" | "similar" | "tensions" | "expansions">("referenced");
+
+const tabs = [
+  { id: "referenced" as const, label: "引用", icon: "↗" },
+  { id: "similar" as const, label: "相似", icon: "≈" },
+  { id: "tensions" as const, label: "矛盾", icon: "⚡" },
+  { id: "expansions" as const, label: "联想", icon: "✦" },
+];
+
 // ── 归档 / 删除 ──
 async function toggleArchive() {
   if (!props.note) return;
@@ -171,16 +189,17 @@ function renderMarkdown(text: string): string {
 
 <template>
   <aside
-    class="flex flex-col h-full border-l border-white/[0.06] bg-[#111111] overflow-hidden"
+    class="flex flex-col h-full overflow-hidden border-l"
     :class="note ? 'w-72' : 'w-0'"
-    style="transition: width 0.2s ease"
+    style="transition: width 0.2s ease; background: var(--bg-panel); border-color: var(--border-subtle)"
   >
     <template v-if="note">
       <!-- 头部 -->
-      <div class="flex items-center justify-between px-4 h-12 border-b border-white/[0.06] shrink-0">
-        <span class="text-[11px] font-semibold text-gray-500 tracking-[0.12em] uppercase">笔记详情</span>
+      <div class="flex items-center justify-between px-4 h-11 border-b shrink-0" style="border-color: var(--border-subtle)">
+        <span class="text-[10px] font-semibold uppercase tracking-[0.12em]" style="color: var(--text-muted)">Context Radar</span>
         <button
-          class="p-1 rounded hover:bg-white/5 text-gray-600 hover:text-gray-400 transition-colors"
+          class="p-1 rounded hover:brightness-110 transition-all"
+          style="color: var(--text-muted)"
           @click="emit('close')"
         >
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -189,38 +208,54 @@ function renderMarkdown(text: string): string {
         </button>
       </div>
 
+      <!-- Tab 切换 -->
+      <div class="flex gap-0.5 px-3 py-1.5 border-b shrink-0" style="border-color: var(--border-subtle)">
+        <button
+          v-for="tab in tabs"
+          :key="tab.id"
+          class="flex-1 text-[9px] py-1 rounded transition-all"
+          :style="{
+            background: activeTab === tab.id ? 'rgba(255,255,255,0.06)' : 'transparent',
+            color: activeTab === tab.id ? 'var(--text-main)' : 'var(--text-muted)',
+          }"
+          @click="activeTab = tab.id"
+        >
+          {{ tab.icon }} {{ tab.label }}
+        </button>
+      </div>
+
       <!-- 内容区 -->
       <div class="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+        <!-- 笔记基本信息（始终可见） -->
         <!-- 标题 -->
         <div @dblclick="enterEditTitle">
           <input
             v-if="editingTitle"
             v-model="editTitle"
-            class="detail-title-input w-full bg-white/[0.04] border border-white/[0.1] rounded-lg px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-indigo-500/50 transition-colors"
+            class="detail-title-input w-full rounded-lg px-3 py-1.5 text-sm outline-none transition-colors border"
+            style="background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.1); color: #F4F6FA"
             @blur="saveTitle"
             @keydown.enter="saveTitle"
             @keydown.escape="cancelEdit"
           />
-          <h2 v-else class="text-sm font-medium text-gray-200 leading-snug cursor-text">
+          <h2 v-else class="text-sm font-medium leading-snug cursor-text" style="color: #F4F6FA">
             {{ note.title }}
-            <span class="ml-1 text-[10px] text-gray-600 opacity-0 hover:opacity-100 transition-opacity">双击编辑</span>
           </h2>
         </div>
 
         <!-- 元信息 -->
         <div class="flex items-center gap-2 flex-wrap">
           <span
-            :class="[
-              'text-[10px] px-1.5 py-0.5 rounded-full font-medium',
-              note.status === 'archived'
-                ? 'bg-amber-500/10 text-amber-400 border border-amber-500/15'
-                : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/15'
-            ]"
+            class="text-[10px] px-1.5 py-0.5 rounded-full font-medium border"
+            :style="{
+              background: note.status === 'archived' ? 'rgba(255,184,107,0.08)' : 'rgba(112,224,163,0.08)',
+              color: note.status === 'archived' ? '#FFB86B' : '#70E0A3',
+              borderColor: note.status === 'archived' ? 'rgba(255,184,107,0.12)' : 'rgba(112,224,163,0.12)',
+            }"
           >
             {{ note.status === 'archived' ? '已归档' : '有效' }}
           </span>
-          <span class="text-[10px] text-gray-600">{{ formatDate(note.created_at) }}</span>
-          <span class="text-[10px] text-gray-700 font-mono">{{ note.id.slice(0, 8) }}</span>
+          <span class="text-[10px]" style="color: var(--text-muted)">{{ formatDate(note.created_at) }}</span>
         </div>
 
         <!-- 标签 -->
@@ -228,102 +263,125 @@ function renderMarkdown(text: string): string {
           <span
             v-for="tag in note.tags"
             :key="tag"
-            class="text-[10px] px-2 py-0.5 rounded-full bg-white/[0.05] text-gray-400 border border-white/[0.04]"
+            class="text-[10px] px-2 py-0.5 rounded-full border"
+            style="background: rgba(255,255,255,0.04); color: var(--text-muted); border-color: rgba(255,255,255,0.04)"
           >{{ tag }}</span>
         </div>
 
-        <!-- 正文 -->
-        <div @dblclick="enterEditContent">
+        <!-- ──── Tab 内容区 ──── -->
+
+        <!-- Referenced Notes -->
+        <div v-if="activeTab === 'referenced'" class="pt-2 border-t" style="border-color: var(--border-subtle)">
+          <span class="text-[10px] font-medium uppercase tracking-wide" style="color: var(--text-muted)">Referenced Notes</span>
+          <div v-if="relationsLoading" class="mt-2">
+            <span class="text-[10px] animate-pulse" style="color: var(--text-muted)">加载中…</span>
+          </div>
+          <template v-else-if="relations">
+            <div v-if="relations.outgoing.length" class="mt-2 space-y-1">
+              <div v-for="rel in relations.outgoing" :key="rel.id" class="flex items-center gap-1.5 text-[11px] py-1">
+                <svg class="w-2.5 h-2.5 shrink-0" style="color: var(--text-muted); opacity: 0.4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                </svg>
+                <span class="truncate" style="color: #F4F6FA">{{ rel.to_title }}</span>
+                <span class="text-[9px] px-1 rounded shrink-0" style="background: rgba(255,255,255,0.04); color: var(--text-muted)">
+                  {{ RELATION_LABELS[rel.relation] || rel.relation }}
+                </span>
+              </div>
+            </div>
+            <div v-if="relations.incoming.length" class="mt-2 space-y-1">
+              <div v-for="rel in relations.incoming" :key="rel.id" class="flex items-center gap-1.5 text-[11px] py-1">
+                <svg class="w-2.5 h-2.5 shrink-0 rotate-180" style="color: var(--text-muted); opacity: 0.4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                </svg>
+                <span class="truncate" style="color: #F4F6FA">{{ rel.from_title }}</span>
+                <span class="text-[9px] px-1 rounded shrink-0" style="background: rgba(255,255,255,0.04); color: var(--text-muted)">
+                  {{ RELATION_LABELS[rel.relation] || rel.relation }}
+                </span>
+              </div>
+            </div>
+            <p v-if="!relations.outgoing.length && !relations.incoming.length" class="mt-2 text-[10px]" style="color: var(--text-muted)">
+              暂无关联笔记
+            </p>
+          </template>
+        </div>
+
+        <!-- Similar Ideas -->
+        <div v-if="activeTab === 'similar'" class="pt-2 border-t" style="border-color: var(--border-subtle)">
+          <span class="text-[10px] font-medium uppercase tracking-wide" style="color: var(--text-muted)">Similar Ideas</span>
+          <p class="mt-2 text-[10px]" style="color: var(--text-muted); opacity: 0.5">
+            选择一条消息后，向量检索会在此显示相似笔记
+          </p>
+        </div>
+
+        <!-- Tensions -->
+        <div v-if="activeTab === 'tensions'" class="pt-2 border-t" style="border-color: var(--border-subtle)">
+          <span class="text-[10px] font-medium uppercase tracking-wide" style="color: var(--text-muted)">Tensions</span>
+          <p class="mt-2 text-[10px]" style="color: var(--text-muted); opacity: 0.5">
+            ReviewAgent 发现的矛盾或盲点会在此显示
+          </p>
+        </div>
+
+        <!-- Expansions -->
+        <div v-if="activeTab === 'expansions'" class="pt-2 border-t" style="border-color: var(--border-subtle)">
+          <span class="text-[10px] font-medium uppercase tracking-wide" style="color: var(--text-muted)">Expansions</span>
+          <p class="mt-2 text-[10px]" style="color: var(--text-muted); opacity: 0.5">
+            BrainAgent 的联想方向会在此显示
+          </p>
+        </div>
+
+        <!-- 正文（始终可访问） -->
+        <div class="pt-2 border-t" style="border-color: var(--border-subtle)" @dblclick="enterEditContent">
+          <span class="text-[10px] font-medium uppercase tracking-wide" style="color: var(--text-muted)">内容</span>
           <textarea
             v-if="editingContent"
             v-model="editContent"
-            rows="8"
-            class="w-full bg-white/[0.04] border border-white/[0.1] rounded-lg px-3 py-2 text-xs text-gray-200 leading-relaxed outline-none focus:border-indigo-500/50 transition-colors resize-y font-mono"
+            rows="6"
+            class="w-full rounded-lg px-3 py-2 text-xs leading-relaxed outline-none transition-colors resize-y font-mono mt-2 border"
+            style="background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.1); color: #F4F6FA"
             @keydown.escape="cancelEdit"
           />
           <div v-if="editingContent" class="flex gap-2 mt-2">
             <button
-              class="text-[11px] px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+              class="text-[11px] px-2.5 py-1 rounded-lg transition-colors text-white"
+              style="background: var(--agent-knowledge)"
               @click="saveContent"
             >保存</button>
             <button
-              class="text-[11px] px-2.5 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-gray-400 transition-colors"
+              class="text-[11px] px-2.5 py-1 rounded-lg transition-colors border"
+              style="background: rgba(255,255,255,0.04); color: var(--text-muted); border-color: rgba(255,255,255,0.08)"
               @click="cancelEdit"
             >取消</button>
           </div>
           <div
             v-else
-            class="prose prose-invert prose-sm max-w-none text-xs text-gray-400 leading-relaxed whitespace-pre-wrap cursor-text"
+            class="prose prose-invert prose-sm max-w-none text-xs leading-relaxed whitespace-pre-wrap cursor-text mt-2"
+            style="color: var(--text-muted)"
             v-html="renderMarkdown(note.content)"
           />
-        </div>
-
-        <!-- 关系图谱 -->
-        <div class="pt-3 border-t border-white/[0.06]">
-          <span class="text-[10px] text-gray-600 font-medium uppercase tracking-wide">关联笔记</span>
-
-          <div v-if="relationsLoading" class="mt-2">
-            <span class="text-[10px] text-gray-700 animate-pulse">加载中…</span>
-          </div>
-
-          <template v-else-if="relations">
-            <div v-if="relations.outgoing.length" class="mt-2">
-              <span class="text-[10px] text-gray-600">链接到</span>
-              <div class="mt-1 space-y-1">
-                <div
-                  v-for="rel in relations.outgoing"
-                  :key="rel.id"
-                  class="flex items-center gap-1.5 text-[11px] py-1"
-                >
-                  <svg class="w-2.5 h-2.5 text-gray-700 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                  </svg>
-                  <span class="text-gray-400 truncate">{{ rel.to_title }}</span>
-                  <span class="text-[9px] px-1 rounded bg-white/[0.04] text-gray-700 shrink-0">{{ RELATION_LABELS[rel.relation] || rel.relation }}</span>
-                </div>
-              </div>
-            </div>
-            <div v-if="relations.incoming.length" class="mt-2">
-              <span class="text-[10px] text-gray-600">被引用</span>
-              <div class="mt-1 space-y-1">
-                <div
-                  v-for="rel in relations.incoming"
-                  :key="rel.id"
-                  class="flex items-center gap-1.5 text-[11px] py-1"
-                >
-                  <svg class="w-2.5 h-2.5 text-gray-700 shrink-0 rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                  </svg>
-                  <span class="text-gray-400 truncate">{{ rel.from_title }}</span>
-                  <span class="text-[9px] px-1 rounded bg-white/[0.04] text-gray-700 shrink-0">{{ RELATION_LABELS[rel.relation] || rel.relation }}</span>
-                </div>
-              </div>
-            </div>
-            <p
-              v-if="!relations.outgoing.length && !relations.incoming.length"
-              class="mt-2 text-[10px] text-gray-700"
-            >暂无关联笔记</p>
-          </template>
         </div>
       </div>
 
       <!-- 底部操作栏 -->
-      <div class="px-4 py-3 border-t border-white/[0.06] flex items-center gap-2 shrink-0">
+      <div class="px-4 py-3 border-t flex items-center gap-2 shrink-0" style="border-color: var(--border-subtle)">
         <button
-          class="flex-1 text-[11px] px-2.5 py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-gray-400 hover:text-gray-200 transition-colors"
+          class="flex-1 text-[11px] px-2.5 py-1.5 rounded-lg transition-all hover:brightness-110 border"
+          style="background: rgba(255,255,255,0.04); color: var(--text-muted); border-color: rgba(255,255,255,0.06)"
           @click="copyContent"
-        >复制全文</button>
+        >复制</button>
         <button
-          class="flex-1 text-[11px] px-2.5 py-1.5 rounded-lg transition-colors"
-          :class="note.status === 'archived'
-            ? 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400'
-            : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-400'"
+          class="flex-1 text-[11px] px-2.5 py-1.5 rounded-lg transition-all hover:brightness-110 border"
+          :style="{
+            background: note.status === 'archived' ? 'rgba(112,224,163,0.08)' : 'rgba(255,184,107,0.08)',
+            color: note.status === 'archived' ? '#70E0A3' : '#FFB86B',
+            borderColor: note.status === 'archived' ? 'rgba(112,224,163,0.12)' : 'rgba(255,184,107,0.12)',
+          }"
           @click="toggleArchive"
         >
-          {{ note.status === 'archived' ? '取消归档' : '归档' }}
+          {{ note.status === 'archived' ? '恢复' : '归档' }}
         </button>
         <button
-          class="text-[11px] px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors"
+          class="text-[11px] px-2.5 py-1.5 rounded-lg transition-all hover:brightness-110 border"
+          style="background: rgba(255,107,107,0.08); color: #FF6B6B; border-color: rgba(255,107,107,0.12)"
           @click="deleteNote"
         >删除</button>
       </div>

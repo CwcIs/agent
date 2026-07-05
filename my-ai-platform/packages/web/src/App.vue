@@ -4,6 +4,7 @@ import ChatView from "./views/ChatView.vue";
 import NoteListView from "./views/NoteListView.vue";
 import NoteDetailPanel from "./views/NoteDetailPanel.vue";
 import DailyDigestPanel from "./views/DailyDigestPanel.vue";
+import TopStatusBar from "./components/TopStatusBar.vue";
 import ToastProvider from "./components/ToastProvider.vue";
 
 interface Note {
@@ -20,6 +21,12 @@ const selectedNote = ref<Note | null>(null);
 const chatRef = ref<InstanceType<typeof ChatView> | null>(null);
 const noteListRef = ref<InstanceType<typeof NoteListView> | null>(null);
 const toastRef = ref<InstanceType<typeof ToastProvider> | null>(null);
+
+// Daily digest 状态
+const showDigest = ref(false);
+const dailyNoteCount = ref(0);
+const dailyTrendCount = ref(0);
+const dailyAnomalyCount = ref(0);
 
 function handleFollowUp(q: string) {
   chatRef.value?.sendWithText(q);
@@ -58,8 +65,25 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => document.addEventListener("keydown", onKeydown));
+onMounted(() => {
+  document.addEventListener("keydown", onKeydown);
+  // 加载 daily digest 数据用于 badge
+  fetchDailyBadge();
+});
+
 onUnmounted(() => document.removeEventListener("keydown", onKeydown));
+
+async function fetchDailyBadge() {
+  try {
+    const resp = await fetch("/digest");
+    if (resp.ok) {
+      const data = await resp.json();
+      dailyNoteCount.value = data.noteCount ?? 0;
+      dailyTrendCount.value = data.trends?.length ?? 0;
+      dailyAnomalyCount.value = data.anomalies?.length ?? 0;
+    }
+  } catch { /* ignore */ }
+}
 
 // Toast 能力注入给子组件
 function toast(message: string, type: "info" | "success" | "error" = "info") {
@@ -70,19 +94,23 @@ provide("toast", toast);
 
 <template>
   <div
-    class="flex h-screen bg-[#0d0d0d] text-gray-100 overflow-hidden"
-    style="font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif;"
+    class="flex h-screen overflow-hidden"
+    style="font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif; background: var(--bg-root); color: var(--text-main)"
   >
-    <!-- 左侧笔记栏 -->
+    <!-- ── 左侧 Memory Stream ── -->
     <transition name="sidebar">
       <aside
         v-show="sidebarOpen"
-        class="flex flex-col w-56 shrink-0 border-r border-white/[0.06] bg-[#111111]"
+        class="flex flex-col w-60 shrink-0 border-r"
+        style="background: var(--bg-panel); border-color: var(--border-subtle)"
       >
-        <div class="flex items-center justify-between px-3 h-12 border-b border-white/[0.06] shrink-0">
-          <span class="text-[11px] font-semibold text-gray-500 tracking-[0.12em] uppercase">笔记库</span>
+        <div class="flex items-center justify-between px-3 h-11 border-b shrink-0" style="border-color: var(--border-subtle)">
+          <span class="text-[10px] font-semibold uppercase tracking-[0.12em]" style="color: var(--text-muted)">
+            Memory Stream
+          </span>
           <button
-            class="p-1 rounded hover:bg-white/5 text-gray-600 hover:text-gray-400 transition-colors"
+            class="p-1 rounded hover:brightness-110 transition-all"
+            style="color: var(--text-muted); opacity: 0.5"
             @click="sidebarOpen = false"
           >
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -98,31 +126,43 @@ provide("toast", toast);
       </aside>
     </transition>
 
-    <!-- 主区域 -->
+    <!-- ── 主区域 ── -->
     <main class="flex-1 flex flex-col min-w-0">
-      <!-- 顶栏 -->
-      <header class="flex items-center gap-3 px-4 h-12 border-b border-white/[0.06] shrink-0">
-        <button
-          v-if="!sidebarOpen"
-          class="p-1 rounded hover:bg-white/5 text-gray-600 hover:text-gray-400 transition-colors"
-          @click="sidebarOpen = true"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-          </svg>
-        </button>
-        <span class="text-sm font-medium text-gray-300">知识工作台</span>
-        <span class="text-[10px] text-gray-600 font-mono bg-white/[0.03] px-1.5 py-0.5 rounded">Ctrl+/ 聚焦输入</span>
-      </header>
+      <!-- Top Status Bar -->
+      <TopStatusBar
+        :streaming="false"
+        :running-agents="[]"
+        :session-id="'connected'"
+        :daily-note-count="dailyNoteCount"
+        :daily-trend-count="dailyTrendCount"
+        :daily-anomaly-count="dailyAnomalyCount"
+        @toggle-digest="showDigest = !showDigest"
+      >
+        <template #toggle>
+          <button
+            v-if="!sidebarOpen"
+            class="p-1 rounded hover:brightness-110 transition-all"
+            style="color: var(--text-muted); opacity: 0.5"
+            @click="sidebarOpen = true"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+        </template>
+      </TopStatusBar>
 
-      <!-- 每日回顾 -->
-      <DailyDigestPanel @follow-up="handleFollowUp" />
+      <!-- 每日回顾（可折叠） -->
+      <DailyDigestPanel
+        v-if="showDigest"
+        @follow-up="handleFollowUp"
+      />
 
-      <!-- Chat -->
+      <!-- Thinking Canvas -->
       <ChatView ref="chatRef" @note-saved="noteListRef?.refresh()" />
     </main>
 
-    <!-- 右侧详情面板 -->
+    <!-- ── 右侧 Context Radar ── -->
     <NoteDetailPanel
       :note="selectedNote"
       @close="handleDetailClose"
@@ -133,29 +173,3 @@ provide("toast", toast);
     <ToastProvider ref="toastRef" />
   </div>
 </template>
-
-<style>
-* { box-sizing: border-box; }
-body { margin: 0; background: #0d0d0d; }
-
-.sidebar-enter-active,
-.sidebar-leave-active {
-  transition: width 0.2s ease, opacity 0.2s ease;
-  overflow: hidden;
-}
-.sidebar-enter-from,
-.sidebar-leave-to {
-  width: 0;
-  opacity: 0;
-}
-.sidebar-enter-to,
-.sidebar-leave-from {
-  width: 224px;
-  opacity: 1;
-}
-
-::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
-</style>

@@ -2,35 +2,48 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Thought Cockpit 色彩系统 ── */
+/* ── AI Thought Studio — Warm Dark Color System ── */
 :root {
-  --bg-root: #0F1115;
-  --bg-panel: #171A21;
-  --bg-card: #20242D;
-  --border-subtle: #2C3240;
-  --text-main: #F4F6FA;
-  --text-muted: #9AA4B2;
+  --app-bg: #0D0E12;
+  --surface-base: #13151B;
+  --surface-raised: #191C24;
+  --surface-hover: #20242E;
+  --border-subtle: rgba(255,255,255,0.06);
+  --border-strong: rgba(255,255,255,0.10);
+  --text-primary: #F4F1EA;
+  --text-secondary: #A9A29A;
+  --text-tertiary: #6F767E;
+  --brand: #8B7CFF;
+  --brand-soft: rgba(139,124,255,0.10);
+  --brand-border: rgba(139,124,255,0.25);
 
-  --agent-knowledge: #7C9CFF;
-  --agent-review: #FFB86B;
-  --agent-brain: #B88CFF;
+  --agent-knowledge: #6EA8FF;
+  --agent-review: #FFB86C;
+  --agent-brain: #B892FF;
 
   --color-success: #70E0A3;
   --color-warning: #FFD166;
   --color-danger: #FF6B6B;
+
+  /* Legacy aliases — 旧组件兼容，Phase 6 删除 */
+  --bg-root: var(--app-bg);
+  --bg-panel: var(--surface-base);
+  --bg-card: var(--surface-raised);
+  --text-main: var(--text-primary);
+  --text-muted: var(--text-secondary);
 }
 
-/* ── 基础重置 ── */
+/* ── Base Reset ── */
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg-root); }
+body { margin: 0; background: var(--app-bg); color: var(--text-primary); }
 
-/* ── 滚动条 ── */
+/* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
 
-/* ── 侧栏过渡 ── */
+/* ── Sidebar Transition ── */
 .sidebar-enter-active,
 .sidebar-leave-active {
   transition: width 0.2s ease, opacity 0.2s ease;
@@ -47,7 +60,21 @@ body { margin: 0; background: var(--bg-root); }
   opacity: 1;
 }
 
-/* ── 淡入动画 ── */
+/* ── Drawer Transition ── */
+.drawer-enter-active,
+.drawer-leave-active {
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.drawer-enter-from,
+.drawer-leave-to {
+  transform: translateX(100%);
+}
+.drawer-enter-to,
+.drawer-leave-from {
+  transform: translateX(0);
+}
+
+/* ── Fade-in (toast, chip appear) ── */
 .animate-fade-in {
   animation: fadeIn 0.2s ease;
 }
@@ -56,7 +83,7 @@ body { margin: 0; background: var(--bg-root); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* ── 脉冲闪烁（Agent 工作中） ── */
+/* ── Pulse Glow (Agent running) ── */
 @keyframes pulse-glow {
   0%, 100% { opacity: 0.4; }
   50% { opacity: 1; }
@@ -65,11 +92,27 @@ body { margin: 0; background: var(--bg-root); }
   animation: pulse-glow 1.5s ease-in-out infinite;
 }
 
-/* ── 滑入 ── */
+/* ── Slide In Right ── */
 @keyframes slideInRight {
   from { transform: translateX(100%); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
 }
 .animate-slide-in-right {
   animation: slideInRight 0.25s ease;
+}
+
+/* ── Shimmer (loading skeleton) ── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.animate-shimmer {
+  background: linear-gradient(90deg, var(--surface-raised) 25%, var(--surface-hover) 50%, var(--surface-raised) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* ── Prose Override ── */
+.prose {
+  max-width: none !important;
 }

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, nextTick, onUnmounted, computed } from "vue";
 import AgentDivider from "../components/AgentDivider.vue";
-import HandoffTimeline from "../components/HandoffTimeline.vue";
-import MessageBlock from "../components/MessageBlock.vue";
-import QuickCaptureBar from "../components/QuickCaptureBar.vue";
+import AgentTraceBar from "../components/AgentTraceBar.vue";
+import ThoughtBlock from "../components/ThoughtBlock.vue";
+import type { InsightChipData } from "../components/InsightChip.vue";
+import ThoughtComposer from "../components/ThoughtComposer.vue";
 
 // ── Agent 配置 ──
 const TAG_AGENT_MAP: Record<string, string> = {
@@ -71,6 +72,7 @@ interface Message {
   agentId?: string;
   done?: boolean;
   toolCalls?: ToolCall[];
+  insightChips?: InsightChipData[];
   isSwitchBanner?: boolean;
   timestamp: number;
 }
@@ -206,6 +208,30 @@ function formatTime(ts: number): string {
 // ── 并行 Agent 状态 ──
 const agentToolStatus = ref<Record<string, string | null>>({});
 
+// ── Insight Chips 累积 ──
+const accumulatedChips = ref<Record<string, InsightChipData[]>>({});
+
+function buildChipsFromTool(name: string, result: string, agentId: string): InsightChipData[] {
+  const chips: InsightChipData[] = [];
+  const suffix = `-${agentId}-${Date.now()}`;
+  if (name === "search_notes") {
+    try {
+      const r = JSON.parse(result);
+      const count = Array.isArray(r) ? r.length : r.results?.length || r.notes?.length || 0;
+      chips.push({ id: `ref${suffix}`, type: "note_ref", label: `引用 ${count} 条笔记`, count });
+    } catch { chips.push({ id: `ref${suffix}`, type: "note_ref", label: "检索笔记" }); }
+  } else if (name === "save_note") {
+    chips.push({ id: `saved${suffix}`, type: "saved", label: "已保存为笔记" });
+  } else if (name === "archive_note") {
+    chips.push({ id: `arch${suffix}`, type: "tool_result", label: "已归档" });
+  } else if (name === "synthesize_notes") {
+    chips.push({ id: `syn${suffix}`, type: "note_ref", label: "合成笔记" });
+  } else {
+    chips.push({ id: `${name}${suffix}`, type: "tool_result", label: name });
+  }
+  return chips;
+}
+
 const runningAgents = computed(() => {
   return Object.entries(agentToolStatus.value)
     .filter(([, tool]) => tool !== null)
@@ -302,6 +328,7 @@ function sendMessage() {
   traceData.value = null;
   traceExpanded.value = false;
   handoffSteps.value = [];
+  accumulatedChips.value = {};
   currentVerdict.value = null;
   currentVerdictReason.value = null;
   input.value = "";
@@ -374,6 +401,11 @@ function sendMessage() {
             }
           }
         }
+        // Accumulate insight chips from this tool call
+        if (target) {
+          if (!accumulatedChips.value[parsed.agentId]) accumulatedChips.value[parsed.agentId] = [];
+          accumulatedChips.value[parsed.agentId].push(...buildChipsFromTool(parsed.name, parsed.result, parsed.agentId));
+        }
         break;
       }
 
@@ -381,6 +413,12 @@ function sendMessage() {
         const parsed = JSON.parse(data);
         const last = messages.value[messages.value.length - 1];
         if (last?.role === "assistant" && !last.done) last.done = true;
+
+        // Assign accumulated chips to the finished agent's last message
+        if (last && last.agentId && accumulatedChips.value[last.agentId]?.length) {
+          last.insightChips = [...accumulatedChips.value[last.agentId]];
+          delete accumulatedChips.value[last.agentId];
+        }
 
         // Track handoff step with per-phase trace_id
         handoffSteps.value.push({
@@ -432,7 +470,15 @@ function sendMessage() {
       case "done": {
         clearStaleTimer();
         const last = messages.value[messages.value.length - 1];
-        if (last) last.done = true;
+        if (last) {
+          last.done = true;
+          // Assign remaining accumulated chips to the last agent's message
+          if (last.agentId && accumulatedChips.value[last.agentId]?.length) {
+            if (!last.insightChips) last.insightChips = [];
+            last.insightChips.push(...accumulatedChips.value[last.agentId]);
+            delete accumulatedChips.value[last.agentId];
+          }
+        }
         streaming.value = false;
         resetToolStatus();
         try {
@@ -492,6 +538,11 @@ function sendMessage() {
       resetToolStatus();
       abortController = null;
     });
+}
+
+function onInsightChipClick(chip: InsightChipData) {
+  // Phase 4: emit to parent for drawer opening
+  console.log("Chip clicked:", chip);
 }
 
 function abortStream() {
@@ -610,15 +661,16 @@ onUnmounted(() => {
           :verdict-warning="i === messages.length - 1 ? currentVerdictReason : null"
         />
 
-        <!-- 普通消息 -->
-        <MessageBlock
+        <!-- 普通消息（文档块风格） -->
+        <ThoughtBlock
           v-else
           :role="msg.role"
           :content="msg.content"
           :agent-id="msg.agentId"
           :done="msg.done"
-          :tool-calls="msg.toolCalls"
+          :insight-chips="msg.insightChips"
           :timestamp="msg.timestamp"
+          @chip-click="onInsightChipClick"
         />
       </template>
     </div>
@@ -640,15 +692,14 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <!-- Handoff Timeline -->
-    <div v-if="handoffSteps.length || currentVerdict" class="px-4 pb-1 shrink-0">
-      <HandoffTimeline
-        :steps="handoffSteps"
-        :verdict="currentVerdict"
-        :verdict-reason="currentVerdictReason"
-        @trace-click="onPhaseTraceClick"
-      />
-    </div>
+    <!-- Agent Trace Bar (collapsed handoff chain) -->
+    <AgentTraceBar
+      v-if="handoffSteps.length || currentVerdict"
+      :steps="handoffSteps"
+      :verdict="currentVerdict"
+      :verdict-reason="currentVerdictReason"
+      @trace-click="onPhaseTraceClick"
+    />
 
     <!-- Trace 摘要条 -->
     <div v-if="traceId" class="px-4 pb-2 shrink-0">
@@ -736,8 +787,8 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Quick Capture Bar -->
-    <QuickCaptureBar
+    <!-- Thought Composer -->
+    <ThoughtComposer
       v-model:input="input"
       v-model:streaming="streaming"
       @send="sendMessage"

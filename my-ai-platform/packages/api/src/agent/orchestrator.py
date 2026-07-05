@@ -120,7 +120,7 @@ async def orchestrate_parallel(
     worklist_ids: list[str] | None = None,
     prompt_version: str = "v1",
     agent_a_id: str = "",
-    trace_id: str = "",
+    trace_ids: list[str] | None = None,
 ) -> AsyncGenerator[dict, None]:
     """
     并行 fan-out：把多个 mention 目标 Agent 同时跑起来，interleave 输出。
@@ -135,14 +135,21 @@ async def orchestrate_parallel(
       worklist_ids        — 每个 mention 对应的 worklist id（与 mentions 顺序一致）
       prompt_version      — prompt 版本标识
       agent_a_id          — 触发 fan-out 的 Agent id（用于交接包 header 标注）
+      trace_ids           — 每个 branch 独立的 trace_id（与 mentions 顺序一致）
 
     产出：SSE-ready 事件 dict，与 BaseAgent.astream 格式相同。
           每个事件都带 agentId 字段，前端按 agentId 区分来源。
+          每个 branch 启动前会发 agent_switch 事件。
           最后的 done 事件由 orchestrator 统一下发。
     """
     event_queue: asyncio.Queue = asyncio.Queue()
     n_agents = len(mentions)
     wids = worklist_ids or [""] * n_agents
+    btids = trace_ids or [str(uuid.uuid4()) for _ in mentions]
+
+    # 发射每个 branch 的 agent_switch（携带独立 trace_id）
+    for (agent_id, _), btid in zip(mentions, btids):
+        yield {"type": "agent_switch", "agentId": agent_id, "trace_id": btid}
 
     # 启动所有 Agent（asyncio.Task，同一 event loop 上并发）
     tasks = [
@@ -159,7 +166,7 @@ async def orchestrate_parallel(
                 work_id=wids[i],
                 prompt_version=prompt_version,
                 agent_a_id=agent_a_id,
-                trace_id=trace_id,
+                trace_id=btids[i],
             )
         )
         for i, (agent_id, content) in enumerate(mentions)

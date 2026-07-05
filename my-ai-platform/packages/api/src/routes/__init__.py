@@ -101,10 +101,13 @@ def _build_sse_generator(user_input: str, session_id: str, prompt_version: str, 
 
                 elif etype == "done":
                     # 跳过 BaseAgent.astream 发出的 agent 级别 done（无 trace_id），
-                    # 只透传 route_serial 的最终 done（携带完整 trace_id）
+                    # 只透传 route_serial 的最终 done（携带完整 trace_id + phase_trace_ids）
                     if not event.get("trace_id"):
                         continue
-                    yield {"event": "done", "data": json.dumps({"session_id": session_id, "trace_id": event.get("trace_id", "")})}
+                    done_data = {"session_id": session_id, "trace_id": event.get("trace_id", "")}
+                    if event.get("phase_trace_ids"):
+                        done_data["phase_trace_ids"] = event["phase_trace_ids"]
+                    yield {"event": "done", "data": json.dumps(done_data)}
 
                 elif etype == "error":
                     yield {"event": "error", "data": event.get("message", "unknown error")}

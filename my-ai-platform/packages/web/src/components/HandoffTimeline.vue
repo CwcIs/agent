@@ -5,12 +5,17 @@ interface HandoffStep {
   from: string;
   to: string;
   trigger: string;
+  traceId?: string;
 }
 
 const props = defineProps<{
   steps: HandoffStep[];
   verdict?: string | null;
   verdictReason?: string | null;
+}>();
+
+const emit = defineEmits<{
+  traceClick: [traceId: string];
 }>();
 
 const AGENT_LABEL: Record<string, string> = {
@@ -73,6 +78,28 @@ function verdictStyle(v: string) {
       >
         {{ AGENT_LABEL[steps[steps.length - 1].to] || steps[steps.length - 1].to }}
       </span>
+    </div>
+
+    <!-- 每个 phase 的 trace 按钮 -->
+    <div v-if="steps.some(s => s.traceId)" class="mt-2 flex items-center gap-2 flex-wrap">
+      <template v-for="(step, i) in steps" :key="'t' + i">
+        <button
+          v-if="step.traceId"
+          class="text-[9px] px-1.5 py-0.5 rounded-full border transition-all hover:brightness-125 font-mono flex items-center gap-1"
+          :style="{
+            borderColor: AGENT_HEX[step.to] + '33',
+            color: AGENT_HEX[step.to] || '#9AA4B2',
+            background: AGENT_BG[step.to] || 'rgba(255,255,255,0.04)',
+          }"
+          :title="`查看 ${AGENT_LABEL[step.to] || step.to} 的 trace: ${step.traceId}`"
+          @click="emit('traceClick', step.traceId!)"
+        >
+          <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+          {{ step.traceId.slice(0, 8) }}
+        </button>
+      </template>
     </div>
 
     <!-- 详细触发说明 -->

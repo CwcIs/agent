@@ -62,6 +62,7 @@ interface HandoffStep {
   from: string;
   to: string;
   trigger: string;
+  traceId?: string;
 }
 
 interface Message {
@@ -135,6 +136,7 @@ function clearStaleTimer() {
 
 // ── Trace 面板 ──
 const traceId = ref<string | null>(null);
+const defaultTraceId = ref<string | null>(null);  // 默认显示的 trace（首个 phase），per-phase 切换后可恢复
 const traceExpanded = ref(false);
 interface TraceCall {
   id: string; agent_id: string; model: string;
@@ -153,12 +155,14 @@ interface TraceData {
 }
 const traceData = ref<TraceData | null>(null);
 const traceLoading = ref(false);
+const phaseTraceLabel = ref<string | null>(null);  // 当前查看的是哪个 phase 的 trace
 
-async function fetchTrace() {
-  if (!traceId.value || traceLoading.value) return;
+async function fetchTrace(tid?: string) {
+  const targetId = tid || traceId.value;
+  if (!targetId || traceLoading.value) return;
   traceLoading.value = true;
   try {
-    const res = await fetch(`/trace/${traceId.value}`);
+    const res = await fetch(`/trace/${targetId}`);
     if (res.ok) traceData.value = await res.json();
   } catch { /* ignore */ }
   finally { traceLoading.value = false; }
@@ -167,6 +171,24 @@ async function fetchTrace() {
 function toggleTrace() {
   traceExpanded.value = !traceExpanded.value;
   if (traceExpanded.value && !traceData.value) fetchTrace();
+}
+
+function onPhaseTraceClick(pid: string) {
+  // 保存当前默认 traceId（如果还没保存）
+  if (!defaultTraceId.value) defaultTraceId.value = traceId.value;
+  phaseTraceLabel.value = pid.slice(0, 8);
+  traceExpanded.value = true;
+  traceData.value = null;
+  traceId.value = pid;
+  fetchTrace(pid);
+}
+
+// 重置 per-phase trace 视图，回到默认 trace
+function resetToGlobalTrace() {
+  phaseTraceLabel.value = null;
+  traceId.value = defaultTraceId.value;
+  traceData.value = null;
+  traceExpanded.value = false;
 }
 
 function formatMs(ms: number): string {
@@ -275,6 +297,8 @@ function sendMessage() {
   messages.value.push({ role: "user", content: userInput, done: true, timestamp: Date.now() });
   streaming.value = true;
   traceId.value = null;
+  defaultTraceId.value = null;
+  phaseTraceLabel.value = null;
   traceData.value = null;
   traceExpanded.value = false;
   handoffSteps.value = [];
@@ -358,11 +382,12 @@ function sendMessage() {
         const last = messages.value[messages.value.length - 1];
         if (last?.role === "assistant" && !last.done) last.done = true;
 
-        // Track handoff step
+        // Track handoff step with per-phase trace_id
         handoffSteps.value.push({
           from: lastAgentId,
           to: parsed.agentId,
           trigger: "",
+          traceId: parsed.trace_id || "",
         });
         lastAgentId = parsed.agentId;
 
@@ -412,7 +437,20 @@ function sendMessage() {
         resetToolStatus();
         try {
           const parsed = JSON.parse(data);
-          if (parsed.trace_id) traceId.value = parsed.trace_id;
+          // 后补 phase trace_ids：handoffSteps 中缺失 traceId 的步骤用 phase_trace_ids 回填
+          if (parsed.phase_trace_ids) {
+            for (const step of handoffSteps.value) {
+              if (!step.traceId && parsed.phase_trace_ids[step.to]) {
+                step.traceId = parsed.phase_trace_ids[step.to];
+              }
+            }
+            // 全局 trace 用第一个 phase 的 trace_id（单 Agent 场景正常显示，多 Agent 场景显示首个）
+            const phaseIds = Object.values(parsed.phase_trace_ids) as string[];
+            if (phaseIds.length > 0 && !phaseTraceLabel.value) {
+              traceId.value = phaseIds[0];
+              defaultTraceId.value = phaseIds[0];
+            }
+          }
         } catch { /* ignore */ }
         abortController = null;
         emit("noteSaved");
@@ -608,11 +646,25 @@ onUnmounted(() => {
         :steps="handoffSteps"
         :verdict="currentVerdict"
         :verdict-reason="currentVerdictReason"
+        @trace-click="onPhaseTraceClick"
       />
     </div>
 
     <!-- Trace 摘要条 -->
     <div v-if="traceId" class="px-4 pb-2 shrink-0">
+      <!-- 当前在查看 per-phase trace，显示"返回全局" -->
+      <div
+        v-if="phaseTraceLabel"
+        class="flex items-center gap-1 mb-1 text-[10px]"
+        style="color: var(--text-muted)"
+      >
+        <span class="opacity-50">查看 phase</span>
+        <span class="font-mono px-1 py-px rounded" style="background: rgba(255,255,255,0.06)">{{ phaseTraceLabel }}</span>
+        <button
+          class="ml-auto underline underline-offset-2 hover:opacity-80 transition-opacity"
+          @click.stop="resetToGlobalTrace"
+        >← 回到全局 trace</button>
+      </div>
       <div
         class="rounded-lg border overflow-hidden cursor-pointer select-none"
         style="background: rgba(255,255,255,0.02); border-color: var(--border-subtle)"

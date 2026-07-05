@@ -76,6 +76,10 @@ async def route_serial(
     tag_agent, cleaned_input = parse_user_tags(user_input)
     start_agent = tag_agent or "knowledge"
 
+    # ── Per-phase trace_id 追踪 ──
+    # 每个 Agent phase 独立 trace_id，前端可按 phase 查看各自成本
+    phase_trace_ids: dict[str, str] = {}
+
     # ── WorklistRegistry: 恢复上次 crash 遗留的 pending handoff ──
     if conn:
         pending_items = get_pending(conn, session_id)
@@ -95,7 +99,9 @@ async def route_serial(
                 }
                 continue
 
-            yield {"type": "agent_switch", "agentId": agent_id}
+            resume_trace_id = str(uuid.uuid4())
+            phase_trace_ids[agent_id] = resume_trace_id
+            yield {"type": "agent_switch", "agentId": agent_id, "trace_id": resume_trace_id}
 
             # 从 worklist 字段重建 handoff 上下文
             tool_events = json.loads(item["tool_events_json"])
@@ -114,7 +120,7 @@ async def route_serial(
                 "recursion_limit": 10,
             }
 
-            agent.set_runtime_context(session_id, prompt_version, trace_id)
+            agent.set_runtime_context(session_id, prompt_version, resume_trace_id)
 
             resume_text = ""
             try:
@@ -167,16 +173,20 @@ async def route_serial(
         if conn and work_id:
             mark_running(conn, work_id)
 
-        # 切换 Agent 通知前端
+        # ── Per-phase trace_id：每个 Agent 独立 trace，全局 trace_id 仅用于 session 关联 ──
+        phase_trace_id = str(uuid.uuid4())
+        phase_trace_ids[agent_id] = phase_trace_id
+
+        # 切换 Agent 通知前端（携带本 phase 的 trace_id）
         if depth > 0:
-            yield {"type": "agent_switch", "agentId": agent_id}
+            yield {"type": "agent_switch", "agentId": agent_id, "trace_id": phase_trace_id}
 
         config = {
             "configurable": {"thread_id": f"{session_id}:{agent_id}:{depth}"},
             "recursion_limit": 10,
         }
 
-        agent.set_runtime_context(session_id, prompt_version, trace_id)
+        agent.set_runtime_context(session_id, prompt_version, phase_trace_id)
 
         full_text = ""
         tool_events: list[dict] = []  # 收集工具调用事件，用于后续 context-transport
@@ -276,6 +286,10 @@ async def route_serial(
                         agent_a_id=agent_id,
                     )
                     parallel_wids.append(wid)
+            # 每个并行 branch 独立 trace_id
+            parallel_trace_ids = [str(uuid.uuid4()) for _ in mentions]
+            for (next_agent_id, _), btid in zip(mentions, parallel_trace_ids):
+                phase_trace_ids[next_agent_id] = btid
             async for event in orchestrate_parallel(
                 user_input=user_input,
                 mentions=mentions,
@@ -286,7 +300,7 @@ async def route_serial(
                 worklist_ids=parallel_wids if parallel_wids else None,
                 prompt_version=prompt_version,
                 agent_a_id=agent_id,
-                trace_id=trace_id,
+                trace_ids=parallel_trace_ids,
             ):
                 yield event
             break  # 并行 branches 结束后不继续串行链路
@@ -309,4 +323,4 @@ async def route_serial(
             queue.append((next_agent_id, handoff_msgs, wid))
         depth += 1
 
-    yield {"type": "done", "session_id": session_id, "trace_id": trace_id}
+    yield {"type": "done", "session_id": session_id, "trace_id": trace_id, "phase_trace_ids": phase_trace_ids}

@@ -96,7 +96,13 @@ def _build_sse_generator(user_input: str, session_id: str, prompt_version: str, 
                 elif etype == "agent_switch":
                     yield {
                         "event": "agent_switch",
-                        "data": json.dumps({"agentId": event["agentId"]}, ensure_ascii=False),
+                        "data": json.dumps(
+                            {
+                                "agentId": event["agentId"],
+                                "trace_id": event.get("trace_id", ""),
+                            },
+                            ensure_ascii=False,
+                        ),
                     }
 
                 elif etype == "done":

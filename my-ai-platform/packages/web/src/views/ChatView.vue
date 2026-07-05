@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, nextTick, onUnmounted, computed } from "vue";
 import AgentDivider from "../components/AgentDivider.vue";
 import AgentTraceBar from "../components/AgentTraceBar.vue";
@@ -6,7 +6,7 @@ import ThoughtBlock from "../components/ThoughtBlock.vue";
 import type { InsightChipData } from "../components/InsightChip.vue";
 import ThoughtComposer from "../components/ThoughtComposer.vue";
 
-// ── Agent 配置 ──
+// 鈹€鈹€ Agent 閰嶇疆 鈹€鈹€
 const TAG_AGENT_MAP: Record<string, string> = {
   review: "review",
   critique: "review",
@@ -20,6 +20,7 @@ const TAG_LABEL: Record<string, string> = {
 };
 
 const AGENT_VERB: Record<string, string> = {
+  knowledge: "正在整理相关记忆",
   review: "正在挑战你的假设",
   brain: "正在做联想扩展",
 };
@@ -49,7 +50,7 @@ function parseTag(text: string): { tag: string; label: string } | null {
   return null;
 }
 
-// ── 数据结构 ──
+// 鈹€鈹€ 鏁版嵁缁撴瀯 鈹€鈹€
 interface ToolCall {
   name: string;
   input?: Record<string, unknown>;
@@ -96,7 +97,7 @@ const streaming = ref(false);
 const activeTag = computed(() => parseTag(input.value));
 const messagesEl = ref<HTMLElement | null>(null);
 
-// ── 命令 ──
+// 鈹€鈹€ 鍛戒护 鈹€鈹€
 const COMMANDS = [
   { trigger: "/review", label: "Review Agent", desc: "审视你的想法", color: "#FFB86B", bg: "rgba(255,184,107,0.06)", border: "rgba(255,184,107,0.2)" },
   { trigger: "/brain", label: "Brain Agent", desc: "联想扩展", color: "#B88CFF", bg: "rgba(184,140,255,0.06)", border: "rgba(184,140,255,0.2)" },
@@ -104,7 +105,7 @@ const COMMANDS = [
 
 let abortController: AbortController | null = null;
 
-// ── 智能滚动 ──
+// 鈹€鈹€ 鏅鸿兘婊氬姩 鈹€鈹€
 const userScrolledUp = ref(false);
 const SCROLL_BOTTOM_THRESHOLD = 48;
 
@@ -118,7 +119,7 @@ function onMessagesScroll() {
   userScrolledUp.value = !isNearBottom();
 }
 
-// ── Stale watchdog ──
+// 鈹€鈹€ Stale watchdog 鈹€鈹€
 const STALE_TIMEOUT_MS = 30_000;
 let staleTimer: ReturnType<typeof setTimeout> | null = null;
 const showStaleWarning = ref(false);
@@ -136,9 +137,9 @@ function clearStaleTimer() {
   showStaleWarning.value = false;
 }
 
-// ── Trace 面板 ──
+// 鈹€鈹€ Trace 闈㈡澘 鈹€鈹€
 const traceId = ref<string | null>(null);
-const defaultTraceId = ref<string | null>(null);  // 默认显示的 trace（首个 phase），per-phase 切换后可恢复
+const defaultTraceId = ref<string | null>(null);  // 榛樿鏄剧ず鐨?trace锛堥涓?phase锛夛紝per-phase 鍒囨崲鍚庡彲鎭㈠
 const traceExpanded = ref(false);
 interface TraceCall {
   id: string; agent_id: string; model: string;
@@ -157,7 +158,7 @@ interface TraceData {
 }
 const traceData = ref<TraceData | null>(null);
 const traceLoading = ref(false);
-const phaseTraceLabel = ref<string | null>(null);  // 当前查看的是哪个 phase 的 trace
+const phaseTraceLabel = ref<string | null>(null);  // 褰撳墠鏌ョ湅鐨勬槸鍝釜 phase 鐨?trace
 
 async function fetchTrace(tid?: string) {
   const targetId = tid || traceId.value;
@@ -175,22 +176,29 @@ function toggleTrace() {
   if (traceExpanded.value && !traceData.value) fetchTrace();
 }
 
-function onPhaseTraceClick(pid: string) {
-  // 保存当前默认 traceId（如果还没保存）
-  if (!defaultTraceId.value) defaultTraceId.value = traceId.value;
-  phaseTraceLabel.value = pid.slice(0, 8);
-  traceExpanded.value = true;
+function setActiveTrace(nextTraceId: string | null, options: { expand?: boolean; label?: string | null } = {}) {
+  if (!nextTraceId) return;
+  traceId.value = nextTraceId;
+  defaultTraceId.value = defaultTraceId.value || nextTraceId;
+  phaseTraceLabel.value = options.label ?? phaseTraceLabel.value;
+  if (options.expand) traceExpanded.value = true;
   traceData.value = null;
-  traceId.value = pid;
-  fetchTrace(pid);
+  fetchTrace(nextTraceId);
 }
 
-// 重置 per-phase trace 视图，回到默认 trace
+function onPhaseTraceClick(pid: string) {
+  // 淇濆瓨褰撳墠榛樿 traceId锛堝鏋滆繕娌′繚瀛橈級
+  if (!defaultTraceId.value) defaultTraceId.value = traceId.value;
+  setActiveTrace(pid, { expand: true, label: pid.slice(0, 8) });
+}
+
+// 閲嶇疆 per-phase trace 瑙嗗浘锛屽洖鍒伴粯璁?trace
 function resetToGlobalTrace() {
   phaseTraceLabel.value = null;
   traceId.value = defaultTraceId.value;
   traceData.value = null;
   traceExpanded.value = false;
+  if (traceId.value) fetchTrace(traceId.value);
 }
 
 function formatMs(ms: number): string {
@@ -205,10 +213,10 @@ function formatTime(ts: number): string {
   return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
 }
 
-// ── 并行 Agent 状态 ──
+// 鈹€鈹€ 骞惰 Agent 鐘舵€?鈹€鈹€
 const agentToolStatus = ref<Record<string, string | null>>({});
 
-// ── Insight Chips 累积 ──
+// 鈹€鈹€ Insight Chips 绱Н 鈹€鈹€
 const accumulatedChips = ref<Record<string, InsightChipData[]>>({});
 
 function buildChipsFromTool(name: string, result: string, agentId: string): InsightChipData[] {
@@ -216,10 +224,12 @@ function buildChipsFromTool(name: string, result: string, agentId: string): Insi
   const suffix = `-${agentId}-${Date.now()}`;
   if (name === "search_notes") {
     try {
-      const r = JSON.parse(result);
-      const count = Array.isArray(r) ? r.length : r.results?.length || r.notes?.length || 0;
+      const parsed = JSON.parse(result);
+      const count = Array.isArray(parsed) ? parsed.length : parsed.results?.length || parsed.notes?.length || 0;
       chips.push({ id: `ref${suffix}`, type: "note_ref", label: `引用 ${count} 条笔记`, count });
-    } catch { chips.push({ id: `ref${suffix}`, type: "note_ref", label: "检索笔记" }); }
+    } catch {
+      chips.push({ id: `ref${suffix}`, type: "note_ref", label: "检索笔记" });
+    }
   } else if (name === "save_note") {
     chips.push({ id: `saved${suffix}`, type: "saved", label: "已保存为笔记" });
   } else if (name === "archive_note") {
@@ -241,7 +251,7 @@ const runningAgents = computed(() => {
     });
 });
 
-// ── Handoff Chain 追踪 ──
+// 鈹€鈹€ Handoff Chain 杩借釜 鈹€鈹€
 const handoffSteps = ref<HandoffStep[]>([]);
 const currentVerdict = ref<string | null>(null);
 const currentVerdictReason = ref<string | null>(null);
@@ -258,7 +268,7 @@ function resetToolStatus() {
   agentToolStatus.value = {};
 }
 
-// ── 手动 SSE 流解析器 ──
+// 鈹€鈹€ 鎵嬪姩 SSE 娴佽В鏋愬櫒 鈹€鈹€
 async function readSSEStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   onEvent: (eventType: string, data: string) => void,
@@ -315,7 +325,7 @@ async function readSSEStream(
   }
 }
 
-// ── 发送 ──
+// 鈹€鈹€ 鍙戦€?鈹€鈹€
 function sendMessage() {
   if (!input.value.trim() || streaming.value) return;
 
@@ -483,19 +493,19 @@ function sendMessage() {
         resetToolStatus();
         try {
           const parsed = JSON.parse(data);
-          // 后补 phase trace_ids：handoffSteps 中缺失 traceId 的步骤用 phase_trace_ids 回填
+          // 鍚庤ˉ phase trace_ids锛歨andoffSteps 涓己澶?traceId 鐨勬楠ょ敤 phase_trace_ids 鍥炲～
           if (parsed.phase_trace_ids) {
             for (const step of handoffSteps.value) {
               if (!step.traceId && parsed.phase_trace_ids[step.to]) {
                 step.traceId = parsed.phase_trace_ids[step.to];
               }
             }
-            // 全局 trace 用第一个 phase 的 trace_id（单 Agent 场景正常显示，多 Agent 场景显示首个）
             const phaseIds = Object.values(parsed.phase_trace_ids) as string[];
             if (phaseIds.length > 0 && !phaseTraceLabel.value) {
-              traceId.value = phaseIds[0];
-              defaultTraceId.value = phaseIds[0];
+              setActiveTrace(phaseIds[0]);
             }
+          } else if (parsed.trace_id) {
+            setActiveTrace(parsed.trace_id);
           }
         } catch { /* ignore */ }
         abortController = null;
@@ -568,7 +578,7 @@ function insertCommand(cmd: string) {
   });
 }
 
-// ── 空状态问候 ──
+// 鈹€鈹€ 绌虹姸鎬侀棶鍊?鈹€鈹€
 const greeting = computed(() => {
   const h = new Date().getHours();
   if (h < 6) return "夜深了";
@@ -587,7 +597,7 @@ onUnmounted(() => {
 
 <template>
   <div class="flex-1 flex flex-col min-h-0">
-    <!-- 并行执行状态横幅 -->
+    <!-- 骞惰鎵ц鐘舵€佹í骞?-->
     <div
       v-if="streaming && runningAgents.length"
       class="px-4 py-1.5 border-b shrink-0"
@@ -602,11 +612,11 @@ onUnmounted(() => {
             :style="{ background: dotIdx === 0 ? 'var(--agent-review)' : 'var(--agent-brain)' }"
           />
         </span>
-        <span style="color: var(--text-muted)">{{ runningAgents.join("  ·  ") }}</span>
+        <span style="color: var(--text-muted)">{{ runningAgents.join("  路  ") }}</span>
       </div>
     </div>
 
-    <!-- Stale 看门狗 -->
+    <!-- Stale 鐪嬮棬鐙?-->
     <div
       v-if="showStaleWarning && streaming"
       class="px-4 py-2 border-b shrink-0"
@@ -616,14 +626,14 @@ onUnmounted(() => {
         <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.94-1.24 2.502-2.784a10.5 10.5 0 00-5.864-6.535M12 3.75A10.5 10.5 0 0117.364 18H6.636A10.5 10.5 0 0112 3.75z" />
         </svg>
-        <span>连接可能已断开，超过 {{ STALE_TIMEOUT_MS / 1000 }} 秒未收到响应</span>
-        <button class="ml-auto underline underline-offset-2 hover:opacity-80" style="color: #FFD166" @click="abortStream">中断重试</button>
+        <span>连接可能已断开，超过 {{ STALE_TIMEOUT_MS / 1000 }} 秒没有收到响应</span>
+        <button class="ml-auto underline underline-offset-2 hover:opacity-80" style="color: #FFD166" @click="abortStream">停止并重试</button>
       </div>
     </div>
 
-    <!-- 消息列表 -->
+    <!-- 娑堟伅鍒楄〃 -->
     <div ref="messagesEl" class="flex-1 overflow-y-auto px-4 py-3 space-y-4" @scroll="onMessagesScroll">
-      <!-- 空状态 -->
+      <!-- 绌虹姸鎬?-->
       <div v-if="!messages.length" class="flex flex-col items-center justify-center h-full gap-4 text-center">
         <div class="w-12 h-12 rounded-2xl flex items-center justify-center" style="background: rgba(255,255,255,0.02)">
           <svg class="w-6 h-6" style="color: var(--text-muted); opacity: 0.3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -649,19 +659,19 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 消息渲染 -->
+      <!-- 娑堟伅娓叉煋 -->
       <template v-for="(msg, i) in messages" :key="i">
-        <!-- Agent 切换分隔条 -->
+        <!-- Agent 鍒囨崲鍒嗛殧鏉?-->
         <AgentDivider
           v-if="msg.isSwitchBanner"
           :agent-id="msg.agentId || 'knowledge'"
           :label="TAG_LABEL[msg.agentId || ''] || msg.agentId || 'Knowledge'"
-          :verb="AGENT_VERB[msg.agentId || ''] || '正在处理'"
+          :verb="AGENT_VERB[msg.agentId || ''] || '姝ｅ湪澶勭悊'"
           :verdict="i === messages.length - 1 ? currentVerdict : null"
           :verdict-warning="i === messages.length - 1 ? currentVerdictReason : null"
         />
 
-        <!-- 普通消息（文档块风格） -->
+        <!-- 鏅€氭秷鎭紙鏂囨。鍧楅鏍硷級 -->
         <ThoughtBlock
           v-else
           :role="msg.role"
@@ -675,7 +685,7 @@ onUnmounted(() => {
       </template>
     </div>
 
-    <!-- 回到底部浮钮 -->
+    <!-- 鍥炲埌搴曢儴娴挳 -->
     <div
       v-if="userScrolledUp && streaming"
       class="flex justify-center -mt-2 pb-1 shrink-0"
@@ -688,11 +698,11 @@ onUnmounted(() => {
         <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7-7-7" />
         </svg>
-        回到底部
+        鍥炲埌搴曢儴
       </button>
     </div>
 
-    <!-- Agent Trace Bar (collapsed handoff chain) -->
+    <!-- Agent Trace Bar (handoff chain) -->
     <AgentTraceBar
       v-if="handoffSteps.length || currentVerdict"
       :steps="handoffSteps"
@@ -701,92 +711,66 @@ onUnmounted(() => {
       @trace-click="onPhaseTraceClick"
     />
 
-    <!-- Trace 摘要条 -->
-    <div v-if="traceId" class="px-4 pb-2 shrink-0">
-      <!-- 当前在查看 per-phase trace，显示"返回全局" -->
-      <div
-        v-if="phaseTraceLabel"
-        class="flex items-center gap-1 mb-1 text-[10px]"
-        style="color: var(--text-muted)"
-      >
-        <span class="opacity-50">查看 phase</span>
-        <span class="font-mono px-1 py-px rounded" style="background: rgba(255,255,255,0.06)">{{ phaseTraceLabel }}</span>
-        <button
-          class="ml-auto underline underline-offset-2 hover:opacity-80 transition-opacity"
-          @click.stop="resetToGlobalTrace"
-        >← 回到全局 trace</button>
+    <!-- Trace Summary -->
+    <div v-if="traceId" class="trace-summary-panel">
+      <div v-if="phaseTraceLabel" class="phase-row">
+        <span>Viewing phase</span>
+        <code>{{ phaseTraceLabel }}</code>
+        <button @click.stop="resetToGlobalTrace">Back to default trace</button>
       </div>
-      <div
-        class="rounded-lg border overflow-hidden cursor-pointer select-none"
-        style="background: rgba(255,255,255,0.02); border-color: var(--border-subtle)"
-        @click="toggleTrace"
-      >
-        <div class="flex items-center gap-2 px-3 py-2 text-[11px]">
-          <svg class="w-3 h-3 shrink-0" style="color: var(--text-muted); opacity: 0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-          </svg>
-          <span class="font-mono text-[10px]" style="color: var(--text-muted)">trace {{ traceId.slice(0, 8) }}</span>
+
+      <div class="trace-card" @click="toggleTrace">
+        <div class="trace-card-head">
+          <span class="trace-card-title">Trace Summary</span>
+          <code>{{ traceId.slice(0, 8) }}</code>
+
           <template v-if="traceData">
-            <span style="color: var(--text-muted); opacity: 0.3">·</span>
-            <span style="color: var(--text-muted)">{{ traceData.summary.call_count }} calls</span>
-            <span style="color: var(--text-muted); opacity: 0.3">·</span>
-            <span style="color: var(--text-muted)">{{ traceData.summary.total_tokens.toLocaleString() }} tokens</span>
-            <span style="color: var(--text-muted); opacity: 0.3">·</span>
-            <span style="color: var(--text-muted)">{{ formatCost(traceData.summary.total_cost_usd) }}</span>
-            <span style="color: var(--text-muted); opacity: 0.3">·</span>
-            <span style="color: var(--text-muted)">{{ formatMs(traceData.summary.total_latency_ms) }}</span>
+            <span class="dot-sep">·</span>
+            <span>{{ traceData.summary.call_count }} calls</span>
+            <span class="dot-sep">·</span>
+            <span>{{ traceData.summary.total_tokens.toLocaleString() }} tokens</span>
+            <span class="dot-sep">·</span>
+            <span>{{ formatCost(traceData.summary.total_cost_usd) }}</span>
+            <span class="dot-sep">·</span>
+            <span>{{ formatMs(traceData.summary.total_latency_ms) }}</span>
           </template>
           <template v-else>
-            <span v-if="traceLoading" class="animate-pulse" style="color: var(--text-muted)">loading...</span>
+            <span class="dot-sep">·</span>
+            <span>{{ traceLoading ? 'loading trace...' : 'click to load' }}</span>
           </template>
-          <svg
-            class="w-2.5 h-2.5 ml-auto transition-transform shrink-0"
-            :class="{ 'rotate-180': traceExpanded }"
-            style="color: var(--text-muted); opacity: 0.4"
-            fill="none" stroke="currentColor" viewBox="0 0 24 24"
-          >
+
+          <svg class="trace-chevron" :class="{ open: traceExpanded }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
           </svg>
         </div>
 
-        <!-- 展开详情 -->
-        <div v-if="traceExpanded && traceData" class="border-t" style="border-color: var(--border-subtle)">
-          <div class="px-3 py-2 space-y-2">
-            <div v-for="agent in traceData.agents" :key="agent.agent_id">
-              <div class="flex items-center gap-2 text-[10px] px-2 py-1">
-                <span
-                  class="px-1.5 py-0.5 rounded font-mono text-[9px] shrink-0"
-                  :style="{ background: AGENT_TRACE_BG[agent.agent_id] || 'rgba(255,255,255,0.06)', color: AGENT_TRACE_COLOR[agent.agent_id] || '#9AA4B2' }"
-                >{{ agent.agent_id }}</span>
-                <span style="color: var(--text-muted); opacity: 0.5">{{ agent.subtotal.tokens.toLocaleString() }} tokens</span>
-                <span class="ml-auto" style="color: var(--text-muted)">{{ formatMs(agent.subtotal.latency_ms) }}</span>
-              </div>
-              <div
-                v-for="(call, ci) in agent.calls"
-                :key="ci"
-                class="flex items-center gap-2 text-[10px] py-0.5 pl-8 opacity-70"
-              >
-                <span class="font-mono text-[9px]" style="color: var(--text-muted)">{{ call.model }}</span>
-                <span style="color: var(--text-muted); opacity: 0.5">in:{{ call.input_tokens }} out:{{ call.output_tokens }}</span>
-                <span class="ml-auto" style="color: var(--text-muted)">{{ formatMs(call.latency_ms) }}</span>
-                <svg
-                  v-if="call.status === 'ok'"
-                  class="w-3 h-3 shrink-0"
-                  style="color: var(--color-success)"
-                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
-                >
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                </svg>
-                <svg v-else class="w-3 h-3 shrink-0" style="color: var(--color-danger)" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </div>
+        <div v-if="traceExpanded && traceData" class="trace-detail-panel">
+          <div v-if="traceData.summary.call_count === 0" class="trace-empty">
+            No LLM calls were recorded for this trace id. Check provider/API-key errors, or whether this response came from cached/local logic.
+          </div>
+
+          <div v-for="agent in traceData.agents" :key="agent.agent_id" class="trace-agent-group">
+            <div class="trace-agent-row">
+              <span class="trace-agent-badge" :style="{ background: AGENT_TRACE_BG[agent.agent_id] || 'rgba(255,255,255,0.06)', color: AGENT_TRACE_COLOR[agent.agent_id] || '#9AA4B2' }">
+                {{ agent.agent_id }}
+              </span>
+              <span>{{ agent.subtotal.tokens.toLocaleString() }} tokens</span>
+              <span>{{ formatCost(agent.subtotal.cost_usd) }}</span>
+              <span class="trace-agent-latency">{{ formatMs(agent.subtotal.latency_ms) }}</span>
+            </div>
+
+            <div v-for="(call, callIndex) in agent.calls" :key="callIndex" class="trace-call-row">
+              <span class="model">{{ call.model }}</span>
+              <span>in:{{ call.input_tokens }}</span>
+              <span>out:{{ call.output_tokens }}</span>
+              <span>{{ formatCost(call.cost_usd) }}</span>
+              <span class="trace-agent-latency">{{ formatMs(call.latency_ms) }}</span>
+              <span :class="call.status === 'ok' ? 'ok' : 'bad'">{{ call.status }}</span>
             </div>
           </div>
         </div>
       </div>
     </div>
-
     <!-- Thought Composer -->
     <ThoughtComposer
       v-model:input="input"
@@ -797,3 +781,132 @@ onUnmounted(() => {
     />
   </div>
 </template>
+
+
+<style scoped>
+.trace-summary-panel {
+  width: min(760px, calc(100% - 32px));
+  margin: 0 auto 12px;
+  flex-shrink: 0;
+}
+
+.phase-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.phase-row code,
+.trace-card code {
+  border-radius: 7px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-secondary);
+  padding: 2px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.phase-row button {
+  margin-left: auto;
+  color: var(--brand);
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.trace-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.04);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.trace-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.trace-card-title {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.dot-sep {
+  color: var(--text-tertiary);
+  opacity: 0.55;
+}
+
+.trace-chevron {
+  width: 13px;
+  height: 13px;
+  margin-left: auto;
+  color: var(--text-tertiary);
+  transition: transform 150ms ease;
+}
+
+.trace-chevron.open {
+  transform: rotate(180deg);
+}
+
+.trace-detail-panel {
+  border-top: 1px solid var(--border-subtle);
+  padding: 10px 12px 12px;
+}
+
+.trace-empty {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.trace-agent-group + .trace-agent-group {
+  margin-top: 10px;
+}
+
+.trace-agent-row,
+.trace-call-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.trace-agent-row {
+  padding: 5px 0;
+}
+
+.trace-call-row {
+  padding: 4px 0 4px 30px;
+  color: var(--text-tertiary);
+}
+
+.trace-agent-badge {
+  border-radius: 7px;
+  padding: 3px 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.trace-agent-latency {
+  margin-left: auto;
+}
+
+.model {
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.ok { color: var(--color-success); }
+.bad { color: var(--color-danger); }
+</style>
+

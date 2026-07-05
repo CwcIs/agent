@@ -1,12 +1,6 @@
-<script setup lang="ts">
-/**
- * AgentTraceBar — 折叠式 Agent handoff 链（吸收 AgentDivider + HandoffTimeline）。
- *
- * 默认折叠：单行 "Knowledge → Review → Brain · natural_end"
- * 点击展开：每个 Agent 的操作摘要 + trace 按钮
- */
+﻿<script setup lang="ts">
 import { ref, computed } from "vue";
-import { agentMeta, agentColors } from "../shared/design-tokens";
+import { agentMeta } from "../shared/design-tokens";
 
 interface HandoffStep {
   from: string;
@@ -30,112 +24,196 @@ const expanded = ref(false);
 const allAgentIds = computed(() => {
   if (!props.steps.length) return [];
   const ids = [props.steps[0].from];
-  for (const s of props.steps) ids.push(s.to);
+  for (const step of props.steps) ids.push(step.to);
   return ids;
 });
 
-function verdictLabel(v: string): string {
-  switch (v) {
-    case 'natural_end': return '自然结束';
-    case 'loop_detected': return '检测到循环';
-    case 'max_depth_reached': return '已达最大深度';
-    case 'missing_handoff': return '可能需要接力';
-    default: return v;
+function verdictLabel(value: string): string {
+  switch (value) {
+    case "natural_end": return "自然结束";
+    case "loop_detected": return "检测到循环";
+    case "max_depth_reached": return "达到最大深度";
+    case "missing_handoff": return "缺少明确接力";
+    default: return value;
   }
 }
 
-function verdictColor(v: string): string {
-  switch (v) {
-    case 'natural_end': return 'var(--color-success)';
-    case 'loop_detected':
-    case 'max_depth_reached': return 'var(--color-danger)';
-    default: return 'var(--color-warning)';
+function verdictColor(value: string): string {
+  switch (value) {
+    case "natural_end": return "var(--color-success)";
+    case "loop_detected":
+    case "max_depth_reached": return "var(--color-danger)";
+    default: return "var(--color-warning)";
   }
 }
 </script>
 
 <template>
-  <div v-if="steps.length || verdict" class="max-w-content mx-auto w-full px-4">
-    <!-- Collapsed bar -->
-    <button
-      class="w-full flex items-center gap-2 py-1.5 text-[11px] rounded-lg transition-all hover:brightness-110 group"
-      :style="{ color: 'var(--text-tertiary)', background: expanded ? 'var(--surface-hover)' : 'transparent' }"
-      @click="expanded = !expanded"
-    >
-      <svg
-        class="w-3 h-3 transition-transform shrink-0"
-        :class="{ 'rotate-90': expanded }"
-        fill="none" stroke="currentColor" viewBox="0 0 24 24"
-      >
+  <div v-if="steps.length || verdict" class="agent-trace-bar">
+    <button class="trace-summary" :class="{ expanded }" @click="expanded = !expanded">
+      <svg class="chevron" :class="{ expanded }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
       </svg>
-      <span class="font-medium" :style="{ color: 'var(--text-secondary)' }">Trace</span>
+      <span class="trace-title">Handoff Trace</span>
 
-      <!-- Agent chain -->
-      <template v-for="(id, i) in allAgentIds" :key="i">
-        <span v-if="i > 0" class="opacity-30">→</span>
-        <span
-          class="font-medium"
-          :style="{ color: `var(--agent-${id})` }"
-        >{{ agentMeta[id]?.short || id }}</span>
+      <template v-for="(id, index) in allAgentIds" :key="`${id}-${index}`">
+        <span v-if="index > 0" class="arrow">→</span>
+        <span class="agent-short" :style="{ color: `var(--agent-${id})` }">
+          {{ agentMeta[id]?.short || id }}
+        </span>
       </template>
 
-      <!-- Verdict -->
       <span
         v-if="verdict"
-        class="ml-auto text-[9px] px-1.5 py-px rounded-full font-medium"
-        :style="{
-          color: verdictColor(verdict),
-          background: verdictColor(verdict) + '12',
-        }"
-      >{{ verdictLabel(verdict) }}</span>
+        class="verdict"
+        :style="{ color: verdictColor(verdict), background: verdictColor(verdict) + '12' }"
+      >
+        {{ verdictLabel(verdict) }}
+      </span>
 
-      <!-- Per-phase trace buttons -->
-      <template v-for="step in steps.filter(s => s.traceId)" :key="'t' + step.traceId">
-        <button
-          class="text-[9px] px-1.5 py-px rounded-full font-mono opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-all border"
-          :style="{
-            color: `var(--agent-${step.to})`,
-            borderColor: `var(--agent-${step.to})` + '30',
-          }"
-          @click.stop="emit('traceClick', step.traceId!)"
-          :title="`${agentMeta[step.to]?.label || step.to} trace`"
-        >{{ step.traceId!.slice(0, 6) }}</button>
-      </template>
+      <button
+        v-for="step in steps.filter(s => s.traceId)"
+        :key="step.traceId"
+        class="phase-trace-btn"
+        :style="{ color: `var(--agent-${step.to})`, borderColor: `var(--agent-${step.to})` + '30' }"
+        :title="`${agentMeta[step.to]?.label || step.to} trace`"
+        @click.stop="emit('traceClick', step.traceId!)"
+      >
+        {{ step.traceId!.slice(0, 6) }}
+      </button>
     </button>
 
-    <!-- Expanded detail -->
-    <div
-      v-if="expanded"
-      class="mt-2 mb-4 p-3 rounded-xl border space-y-2"
-      :style="{ background: 'var(--surface-base)', borderColor: 'var(--border-subtle)' }"
-    >
-      <div
-        v-for="(step, i) in steps"
-        :key="i"
-        class="text-[12px] leading-relaxed"
-        :style="{ color: 'var(--text-secondary)' }"
-      >
+    <div v-if="expanded" class="trace-detail">
+      <div v-if="!steps.length" class="trace-empty">
+        单 Agent 回答没有 handoff；下方的 Trace Summary 展示本次 LLM 调用成本与耗时。
+      </div>
+      <div v-for="(step, index) in steps" :key="index" class="trace-step">
         <span :style="{ color: `var(--agent-${step.from})` }">{{ agentMeta[step.from]?.label || step.from }}</span>
-        <span class="opacity-50"> → </span>
+        <span class="arrow">→</span>
         <span :style="{ color: `var(--agent-${step.to})` }">@{{ step.to }}</span>
-        <template v-if="step.trigger"> — "{{ step.trigger.slice(0, 80) }}{{ step.trigger.length > 80 ? '…' : '' }}"</template>
-        <button
-          v-if="step.traceId"
-          class="ml-2 text-[9px] underline underline-offset-2 opacity-50 hover:opacity-100"
-          :style="{ color: `var(--agent-${step.to})` }"
-          @click="emit('traceClick', step.traceId!)"
-        >trace</button>
+        <template v-if="step.trigger">
+          <span class="trigger">“{{ step.trigger.slice(0, 80) }}{{ step.trigger.length > 80 ? '…' : '' }}”</span>
+        </template>
+        <button v-if="step.traceId" class="trace-link" @click="emit('traceClick', step.traceId!)">
+          查看 trace
+        </button>
       </div>
 
-      <!-- Verdict detail -->
-      <div
-        v-if="verdict"
-        class="text-[11px] pt-1.5 border-t"
-        :style="{ borderColor: 'var(--border-subtle)', color: verdictColor(verdict) }"
-      >
+      <div v-if="verdict" class="verdict-detail" :style="{ color: verdictColor(verdict) }">
         {{ verdictReason || verdictLabel(verdict) }}
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.agent-trace-bar {
+  width: min(760px, calc(100% - 32px));
+  margin: 0 auto 10px;
+}
+
+.trace-summary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  color: var(--text-tertiary);
+  padding: 8px 10px;
+  font-size: 11px;
+  transition: 150ms ease;
+}
+
+.trace-summary:hover,
+.trace-summary.expanded {
+  background: rgba(255,255,255,0.045);
+  border-color: var(--border-subtle);
+}
+
+.chevron {
+  width: 13px;
+  height: 13px;
+  transition: transform 150ms ease;
+}
+
+.chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.trace-title {
+  color: var(--text-secondary);
+  font-weight: 650;
+}
+
+.arrow {
+  opacity: 0.35;
+}
+
+.agent-short {
+  font-weight: 750;
+}
+
+.verdict {
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.phase-trace-btn {
+  border: 1px solid;
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  opacity: 0.68;
+  transition: 150ms ease;
+}
+
+.phase-trace-btn:hover {
+  opacity: 1;
+  background: rgba(255,255,255,0.04);
+}
+
+.trace-detail {
+  margin-top: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.035);
+  padding: 12px;
+}
+
+.trace-empty,
+.trace-step {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.trace-step {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.trigger {
+  color: var(--text-tertiary);
+}
+
+.trace-link {
+  color: var(--brand);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  font-size: 11px;
+}
+
+.verdict-detail {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11px;
+}
+</style>

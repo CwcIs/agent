@@ -1,7 +1,7 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, computed } from "vue";
 import NoteListView from "../views/NoteListView.vue";
-import { agentMeta, colors, layout } from "../shared/design-tokens";
+import { agentMeta, layout } from "../shared/design-tokens";
 
 interface Note {
   id: string;
@@ -34,99 +34,73 @@ defineExpose({ focusSearch, refresh });
 
 const railWidth = layout.leftRailWidth;
 
-// ── Navigation Items ──
-const navItems = [
-  { id: 'studio',     icon: '◆', label: 'Studio' },
-  { id: 'notes',      icon: '▦', label: 'Notes',     count: 0 },
-  { id: 'daily',      icon: '◉', label: 'Daily Review', badge: props.dailyTrendCount },
-  { id: 'archive',    icon: '◻', label: 'Archive' },
-];
+const navItems = computed(() => [
+  { id: "studio", label: "Inbox", count: props.dailyNoteCount ?? 0 },
+  { id: "notes", label: "Notes" },
+  { id: "daily", label: "Daily Review", badge: props.dailyTrendCount ?? 0 },
+  { id: "archive", label: "Archive" },
+]);
 
 const agentItems = [
-  { id: 'knowledge', label: agentMeta.knowledge.label, short: agentMeta.knowledge.short },
-  { id: 'review',    label: agentMeta.review.label,    short: agentMeta.review.short },
-  { id: 'brain',     label: agentMeta.brain.label,     short: agentMeta.brain.short },
+  { id: "knowledge", label: agentMeta.knowledge.label, short: agentMeta.knowledge.short },
+  { id: "review", label: agentMeta.review.label, short: agentMeta.review.short },
+  { id: "brain", label: agentMeta.brain.label, short: agentMeta.brain.short },
 ];
 
-const activeNav = computed(() => 'studio');
+const activeNav = computed(() => "studio");
 </script>
 
 <template>
   <Transition name="sidebar">
     <aside
       v-show="open"
-      class="flex flex-col shrink-0 border-r overflow-hidden"
-      :style="{ width: railWidth, background: 'var(--surface-base)', borderColor: 'var(--border-subtle)' }"
+      class="studio-left-rail flex flex-col shrink-0 border-r overflow-hidden"
+      :style="{ width: railWidth }"
     >
-      <!-- Header -->
-      <div
-        class="flex items-center justify-between px-4 h-11 shrink-0 border-b"
-        :style="{ borderColor: 'var(--border-subtle)' }"
-      >
-        <span
-          class="text-[11px] font-semibold tracking-[0.08em]"
-          :style="{ color: 'var(--text-secondary)' }"
-        >AI Thought Studio</span>
-        <button
-          class="p-1 rounded hover:brightness-125 transition-all opacity-40 hover:opacity-70"
-          :style="{ color: 'var(--text-secondary)' }"
-          @click="emit('toggle')"
-          title="收起侧边栏"
-        >
+      <div class="rail-header">
+        <div class="brand-mark">✦</div>
+        <div class="min-w-0">
+          <div class="brand-title">Thought Studio</div>
+          <div class="brand-subtitle">Personal AI workspace</div>
+        </div>
+        <button class="collapse-btn" @click="emit('toggle')" title="收起侧边栏">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7" />
           </svg>
         </button>
       </div>
 
-      <!-- Navigation -->
-      <nav class="px-3 py-3 space-y-0.5 shrink-0">
-        <div class="text-[10px] font-medium uppercase tracking-[0.1em] px-1.5 mb-2" :style="{ color: 'var(--text-tertiary)' }">
-          Spaces
-        </div>
+      <button class="new-thought-btn">
+        <span>New Thought</span>
+        <kbd>⌘N</kbd>
+      </button>
+
+      <nav class="rail-nav">
+        <div class="section-label">Studio</div>
         <button
           v-for="item in navItems"
           :key="item.id"
-          class="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-[8px] text-[13px] transition-all text-left"
-          :class="activeNav === item.id ? '' : 'opacity-50 hover:opacity-75'"
-          :style="{
-            color: activeNav === item.id ? 'var(--text-primary)' : 'var(--text-secondary)',
-            background: activeNav === item.id ? 'var(--surface-hover)' : 'transparent',
-          }"
+          class="rail-nav-item"
+          :class="{ active: activeNav === item.id }"
           @click="item.id === 'daily' ? emit('toggleDigest') : null"
         >
-          <span class="text-[10px] w-4 text-center shrink-0" :style="{ opacity: 0.6 }">{{ item.icon }}</span>
-          <span class="flex-1">{{ item.label }}</span>
-          <span
-            v-if="item.badge && item.badge > 0"
-            class="text-[9px] px-1.5 py-px rounded-full font-medium shrink-0"
-            :style="{ background: 'var(--brand-soft)', color: 'var(--brand)' }"
-          >{{ item.badge }}</span>
+          <span>{{ item.label }}</span>
+          <em v-if="item.count">{{ item.count }}</em>
+          <i v-if="item.badge">{{ item.badge }} themes</i>
         </button>
 
-        <!-- Agents section -->
-        <div class="text-[10px] font-medium uppercase tracking-[0.1em] px-1.5 mt-4 mb-2" :style="{ color: 'var(--text-tertiary)' }">
-          Agents
-        </div>
+        <div class="section-label mt-5">Agents</div>
         <div
           v-for="agent in agentItems"
           :key="agent.id"
-          class="flex items-center gap-2.5 px-2 py-1.5 text-[13px] opacity-50"
-          :style="{ color: 'var(--text-secondary)' }"
+          class="agent-pill"
         >
-          <span
-            class="w-4 h-4 rounded-[4px] flex items-center justify-center text-[8px] font-bold shrink-0"
-            :style="{
-              background: `var(--agent-${agent.id})` + '15',
-              color: `var(--agent-${agent.id})`,
-            }"
-          >{{ agent.short }}</span>
-          <span>{{ agent.label }}</span>
+          <span :class="agent.id">{{ agent.short }}</span>
+          <b>{{ agent.label }}</b>
         </div>
       </nav>
 
-      <!-- Note List -->
-      <div class="flex-1 min-h-0 overflow-hidden">
+      <div class="note-list-wrap">
         <NoteListView
           ref="noteListRef"
           :selected-id="selectedNoteId"
@@ -136,3 +110,153 @@ const activeNav = computed(() => 'studio');
     </aside>
   </Transition>
 </template>
+
+<style scoped>
+.studio-left-rail {
+  background: rgba(13, 14, 20, 0.78);
+  border-color: var(--border-subtle);
+  backdrop-filter: blur(24px);
+}
+
+.rail-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 14px 12px;
+}
+
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--brand), #B892FF);
+  box-shadow: 0 14px 34px rgba(139, 124, 255, 0.28);
+}
+
+.brand-title {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.brand-subtitle {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  margin-top: 1px;
+}
+
+.collapse-btn {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  opacity: 0.55;
+  padding: 6px;
+  border-radius: 9px;
+  transition: 150ms ease;
+}
+
+.collapse-btn:hover {
+  opacity: 1;
+  background: rgba(255,255,255,0.05);
+}
+
+.new-thought-btn {
+  height: 40px;
+  margin: 0 14px 16px;
+  border: 1px solid var(--brand-border);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(139,124,255,0.20), rgba(139,124,255,0.08));
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.new-thought-btn kbd {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.rail-nav {
+  padding: 0 12px 12px;
+}
+
+.section-label {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0 8px 7px;
+}
+
+.rail-nav-item {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  font-size: 13px;
+  text-align: left;
+  transition: 150ms ease;
+}
+
+.rail-nav-item:hover,
+.rail-nav-item.active {
+  background: rgba(255,255,255,0.055);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.rail-nav-item em,
+.rail-nav-item i {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-style: normal;
+  font-size: 11px;
+}
+
+.agent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  margin: 0 0 7px 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: rgba(255,255,255,0.026);
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.agent-pill span {
+  width: 17px;
+  height: 17px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.agent-pill span.knowledge { color: var(--agent-knowledge); background: rgba(110,168,255,0.12); }
+.agent-pill span.review { color: var(--agent-review); background: rgba(255,184,108,0.12); }
+.agent-pill span.brain { color: var(--agent-brain); background: rgba(184,146,255,0.12); }
+.agent-pill b { font-weight: 500; }
+
+.note-list-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+</style>

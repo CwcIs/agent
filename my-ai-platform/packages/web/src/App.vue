@@ -6,6 +6,7 @@ import InsightDrawer from "./components/InsightDrawer.vue";
 import ChatView from "./views/ChatView.vue";
 import NoteDetailPanel from "./views/NoteDetailPanel.vue";
 import DailyDigestPanel from "./views/DailyDigestPanel.vue";
+import CommercialPrototype from "./views/CommercialPrototype.vue";
 import TopStatusBar from "./components/TopStatusBar.vue";
 import ToastProvider from "./components/ToastProvider.vue";
 
@@ -24,6 +25,7 @@ const selectedNote = ref<Note | null>(null);
 const chatRef = ref<InstanceType<typeof ChatView> | null>(null);
 const noteListRef = ref<InstanceType<typeof LeftRail> | null>(null);
 const toastRef = ref<InstanceType<typeof ToastProvider> | null>(null);
+const showCommercialPrototype = ref(false);
 
 // Daily digest state
 const showDigest = ref(false);
@@ -71,6 +73,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 onMounted(() => {
+  showCommercialPrototype.value = new URLSearchParams(window.location.search).get("prototype") === "1";
   document.addEventListener("keydown", onKeydown);
   fetchDailyBadge();
 });
@@ -97,7 +100,9 @@ provide("toast", toast);
 </script>
 
 <template>
-  <AppShell :sidebar-open="sidebarOpen" :drawer-open="drawerOpen">
+  <CommercialPrototype v-if="showCommercialPrototype" />
+
+  <AppShell v-else :sidebar-open="sidebarOpen" :drawer-open="drawerOpen">
     <!-- Left Rail -->
     <template #left-rail>
       <LeftRail

@@ -1,18 +1,7 @@
-<script setup lang="ts">
-/**
- * InsightChip — 单个可点击 chip。
- *
- * 类型：
- * - note_ref: "引用 4 条笔记"
- * - saved: "已保存"
- * - tool_result: "search_notes 完成"
- * - review_finding: "Review 发现 2 个假设"
- * - brain_expansion: "Brain 联想 3 个方向"
- */
-
+﻿<script setup lang="ts">
 export interface InsightChipData {
   id: string;
-  type: 'note_ref' | 'saved' | 'tool_result' | 'review_finding' | 'brain_expansion';
+  type: "note_ref" | "saved" | "tool_result" | "review_finding" | "brain_expansion";
   label: string;
   count?: number;
   payload?: unknown;
@@ -28,31 +17,60 @@ defineEmits<{
 
 function chipStyle(type: string) {
   switch (type) {
-    case 'note_ref':        return { icon: '▦', color: 'var(--agent-knowledge)' };
-    case 'saved':           return { icon: '✓', color: 'var(--color-success)' };
-    case 'tool_result':     return { icon: '⚙', color: 'var(--text-tertiary)' };
-    case 'review_finding':  return { icon: '⚠', color: 'var(--agent-review)' };
-    case 'brain_expansion': return { icon: '◇', color: 'var(--agent-brain)' };
-    default:                return { icon: '•', color: 'var(--text-tertiary)' };
+    case "note_ref": return { icon: "↗", color: "var(--agent-knowledge)" };
+    case "saved": return { icon: "✓", color: "var(--color-success)" };
+    case "tool_result": return { icon: "◇", color: "var(--text-tertiary)" };
+    case "review_finding": return { icon: "!", color: "var(--agent-review)" };
+    case "brain_expansion": return { icon: "✦", color: "var(--agent-brain)" };
+    default: return { icon: "•", color: "var(--text-tertiary)" };
   }
 }
 </script>
 
 <template>
   <button
-    class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all hover:brightness-110 border"
+    class="insight-chip"
     :style="{
       color: chipStyle(chip.type).color,
-      background: chipStyle(chip.type).color + '10',
-      borderColor: chipStyle(chip.type).color + '20',
+      background: chipStyle(chip.type).color + '12',
+      borderColor: chipStyle(chip.type).color + '26',
     }"
     @click="$emit('click', chip)"
   >
-    <span class="text-[9px]">{{ chipStyle(chip.type).icon }}</span>
-    <span>{{ chip.label }}</span>
-    <span
-      v-if="chip.count !== undefined"
-      class="text-[9px] opacity-60 ml-0.5"
-    >{{ chip.count }}</span>
+    <span>{{ chipStyle(chip.type).icon }}</span>
+    <b>{{ chip.label }}</b>
+    <em v-if="chip.count !== undefined">{{ chip.count }}</em>
   </button>
 </template>
+
+<style scoped>
+.insight-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid;
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 11px;
+  transition: 150ms ease;
+}
+
+.insight-chip:hover {
+  filter: brightness(1.12);
+  transform: translateY(-1px);
+}
+
+.insight-chip span {
+  font-size: 10px;
+}
+
+.insight-chip b,
+.insight-chip em {
+  font-weight: 600;
+  font-style: normal;
+}
+
+.insight-chip em {
+  opacity: 0.65;
+}
+</style>

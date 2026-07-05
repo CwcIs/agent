@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed } from "vue";
 
 const props = defineProps<{
@@ -20,48 +20,97 @@ const hasDigestHighlights = computed(() =>
 </script>
 
 <template>
-  <header
-    class="flex items-center gap-3 px-4 h-11 border-b shrink-0"
-    :style="{ borderColor: 'var(--border-subtle)', background: 'var(--surface-base)' }"
-  >
+  <header class="top-status-bar">
     <slot name="toggle" />
 
-    <!-- Brand -->
-    <span class="text-[11px] font-semibold tracking-[0.04em]" :style="{ color: 'var(--text-secondary)' }">
-      Thought Studio
-    </span>
+    <div class="top-title">
+      <span class="eyebrow">AI Thought Studio</span>
+      <strong>Inbox</strong>
+    </div>
 
     <div class="flex-1" />
 
-    <!-- Daily Digest Badge -->
     <button
       v-if="dailyNoteCount"
-      class="flex items-center gap-1.5 text-[10px] px-2 py-1 rounded-full transition-all hover:brightness-110 shrink-0 border"
-      :style="{
-        background: hasDigestHighlights ? 'var(--brand-soft)' : 'rgba(255,255,255,0.02)',
-        borderColor: hasDigestHighlights ? 'var(--brand-border)' : 'var(--border-subtle)',
-        color: hasDigestHighlights ? 'var(--brand)' : 'var(--text-tertiary)',
-      }"
+      class="daily-badge"
+      :class="{ active: hasDigestHighlights }"
       @click="emit('toggleDigest')"
     >
-      <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-      </svg>
-      Today {{ dailyNoteCount }} notes
-      <template v-if="dailyTrendCount"> · {{ dailyTrendCount }} trends</template>
+      Today · {{ dailyNoteCount }} notes
+      <template v-if="dailyTrendCount"> · {{ dailyTrendCount }} themes</template>
     </button>
 
-    <!-- Status dot -->
-    <span
-      class="w-1.5 h-1.5 rounded-full shrink-0"
-      :class="streaming ? 'animate-pulse-glow' : ''"
-      :style="{ background: streaming ? 'var(--agent-knowledge)' : 'var(--color-success)' }"
-    />
-
-    <!-- Cmd+K hint -->
-    <span
-      class="text-[9px] font-mono px-1.5 py-0.5 rounded hidden lg:block"
-      :style="{ background: 'rgba(255,255,255,0.03)', color: 'var(--text-tertiary)', opacity: 0.5 }"
-    >⌘K</span>
+    <span class="status-dot" :class="{ streaming }" />
+    <span class="cmd-hint">⌘K</span>
   </header>
 </template>
+
+<style scoped>
+.top-status-bar {
+  height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(13,14,20,0.72);
+  backdrop-filter: blur(22px);
+  flex-shrink: 0;
+}
+
+.top-title {
+  display: grid;
+  gap: 1px;
+}
+
+.eyebrow {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.top-title strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.daily-badge,
+.cmd-hint {
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.04);
+  color: var(--text-tertiary);
+  padding: 7px 10px;
+  font-size: 11px;
+}
+
+.daily-badge.active {
+  background: var(--brand-soft);
+  border-color: var(--brand-border);
+  color: var(--brand);
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--color-success);
+  box-shadow: 0 0 16px rgba(112,224,163,0.45);
+}
+
+.status-dot.streaming {
+  background: var(--agent-knowledge);
+  box-shadow: 0 0 16px rgba(110,168,255,0.55);
+}
+
+.cmd-hint {
+  display: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@media (min-width: 1024px) {
+  .cmd-hint { display: inline-block; }
+}
+</style>

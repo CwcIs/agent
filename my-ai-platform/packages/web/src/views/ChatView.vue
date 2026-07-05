@@ -436,7 +436,8 @@ function copyText(text: string) {
 }
 
 function insertCommand(cmd: string) {
-  input.value = cmd + " ";
+  // /command → #tag：后端只认 #hashtag 路由，/ 仅用于面板展示
+  input.value = cmd.replace("/", "#") + " ";
   nextTick(() => {
     (document.querySelector(".chat-input") as HTMLTextAreaElement)?.focus();
   });

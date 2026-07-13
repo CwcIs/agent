@@ -254,6 +254,21 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_source_trace_note ON source_trace(note_id);
 
+        -- ⑯ custom_tools — 用户自定义 HTTP 工具（Phase 7.3）
+        CREATE TABLE IF NOT EXISTS custom_tools (
+            id              TEXT PRIMARY KEY,
+            name            TEXT NOT NULL UNIQUE,
+            description     TEXT NOT NULL DEFAULT '',
+            endpoint        TEXT NOT NULL,
+            method          TEXT NOT NULL DEFAULT 'GET'
+                                CHECK(method IN ('GET','POST')),
+            params_json     TEXT NOT NULL DEFAULT '{}',
+            headers_json    TEXT NOT NULL DEFAULT '{}',
+            output_template TEXT NOT NULL DEFAULT '{{response}}',
+            enabled         INTEGER NOT NULL DEFAULT 1,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+
         -- ⑨ worklist — A2A 任务持久化（进程崩了不丢 handoff）
         CREATE TABLE IF NOT EXISTS worklist (
             id              TEXT PRIMARY KEY,
@@ -332,11 +347,13 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("source_url", "''", "TEXT"),
         ("source_file", "''", "TEXT"),
         ("source_type", "'user'", "TEXT"),
-        ("word_count", "0", "INTEGER"),
-    ]:
-        try:
-            conn.execute(f"ALTER TABLE notes ADD COLUMN {col} {col_type} NOT NULL DEFAULT {default}")
         except Exception:
             pass  # 列已存在
+
+    # ── 迁移（Phase 7.4）：notes 增加 attachments_json ──
+    try:
+        conn.execute("ALTER TABLE notes ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'")
+    except Exception:
+        pass
 
     conn.commit()

@@ -1047,4 +1047,47 @@ def make_tools(conn: sqlite3.Connection) -> list:
 
         return json.dumps({"suggestions": suggestions[:3]}, ensure_ascii=False)
 
-    return [search_notes, save_note, get_note, archive_note, get_notes_summary, synthesize_notes, get_note_relations, detect_collisions, suggest_tags, suggest_relation, accept_suggestion, reject_suggestion, merge_tags, list_tag_aliases, web_search, import_webpage, review_note, get_due_reviews, suggest_gaps, suggest_writing]
+    # ── Phase 7.3: Dynamic custom tools from DB ──
+    custom = []
+    try:
+        ct_rows = conn.execute(
+            "SELECT name, description, endpoint, method, params_json, output_template FROM custom_tools WHERE enabled = 1"
+        ).fetchall()
+        for ct in ct_rows:
+            _name = ct["name"]
+            _desc = ct["description"]
+            _endpoint = ct["endpoint"]
+            _method = ct["method"].upper()
+            _params = json.loads(ct["params_json"] or "{}")
+            _template = ct["output_template"]
+
+            @tool
+            async def _dynamic_tool(input_str: str = "", _n=_name, _d=_desc, _ep=_endpoint, _m=_method, _p=_params, _t=_template) -> str:
+                """Dynamically loaded custom tool. See description for details."""
+                try:
+                    import urllib.request, urllib.error
+                    if _m == "GET":
+                        qs = "&".join(f"{k}={v}" for k, v in _p.items()) if _p else ""
+                        url = f"{_ep}?{qs}" if qs else _ep
+                        req = urllib.request.Request(url, method="GET")
+                    else:
+                        data = json.dumps(_p).encode() if _p else b"{}"
+                        req = urllib.request.Request(_ep, data=data, method="POST",
+                                                     headers={"Content-Type": "application/json"})
+                    resp = await asyncio.wait_for(
+                        asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=10).read()),
+                        timeout=12,
+                    )
+                    raw = resp.decode("utf-8", errors="replace")[:2000]
+                    result = _t.replace("{{response}}", raw)
+                    return result
+                except Exception as e:
+                    return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
+
+            _dynamic_tool.name = _name
+            _dynamic_tool.description = _desc
+            custom.append(_dynamic_tool)
+    except Exception:
+        pass
+
+    return [search_notes, save_note, get_note, archive_note, get_notes_summary, synthesize_notes, get_note_relations, detect_collisions, suggest_tags, suggest_relation, accept_suggestion, reject_suggestion, merge_tags, list_tag_aliases, web_search, import_webpage, review_note, get_due_reviews, suggest_gaps, suggest_writing] + custom

@@ -1,5 +1,5 @@
 # ============================================================
-# SQLite 10 表 Schema（Phase 1 + 2 + 3 + 4A-1）
+# SQLite 12 表 Schema（Phase 1 + 2 + 3 + 4A-1 + 4.3 + 4.4）
 # 对应 MD §8.5 Phase 1 全部表 + §4.3 数据模型
 #
 # 表：
@@ -14,6 +14,8 @@
 #                       Phase 4A-1 新增 confidence / source / evidence / status 列
 #   9. worklist        — A2A 任务持久化（进程崩了不丢 handoff）
 #  10. pending_suggestions — 待确认的关系/标签建议（Phase 4A-1 新增）
+#  11. idea_collisions — 意外关联发现（Phase 4.3 新增）
+#  12. tag_aliases     — 标签同义词（Phase 4.4 新增）
 # ============================================================
 
 import sqlite3
@@ -188,6 +190,31 @@ def init_db(conn: sqlite3.Connection) -> None:
             decided_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_pending_suggestions_status ON pending_suggestions(status);
+
+        -- ⑪ idea_collisions — 意外关联发现（Phase 4.3）
+        CREATE TABLE IF NOT EXISTS idea_collisions (
+            id          TEXT PRIMARY KEY,
+            note_a_id   TEXT NOT NULL REFERENCES notes(id),
+            note_b_id   TEXT NOT NULL REFERENCES notes(id),
+            score       INTEGER NOT NULL DEFAULT 0 CHECK(score BETWEEN 1 AND 10),
+            connection  TEXT NOT NULL DEFAULT '',
+            angle       TEXT NOT NULL DEFAULT 'pattern'
+                            CHECK(angle IN ('pattern','contradiction','synthesis','bridge')),
+            is_read     INTEGER NOT NULL DEFAULT 0,
+            detected_by TEXT NOT NULL DEFAULT 'manual'
+                            CHECK(detected_by IN ('manual','daily_digest','save_note')),
+            created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_idea_collisions_read ON idea_collisions(is_read);
+
+        -- ⑫ tag_aliases — 标签同义词（Phase 4.4）
+        CREATE TABLE IF NOT EXISTS tag_aliases (
+            id         TEXT PRIMARY KEY,
+            canonical  TEXT NOT NULL,
+            alias      TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_tag_aliases_canonical ON tag_aliases(canonical);
 
         -- ⑨ worklist — A2A 任务持久化（进程崩了不丢 handoff）
         CREATE TABLE IF NOT EXISTS worklist (

@@ -53,5 +53,5 @@ class BrainAgent(BaseAgent):
 
     def _make_tools(self) -> list:
         all_tools = make_tools(self.conn)
-        keep = {"search_notes", "get_note", "synthesize_notes"}
+        keep = {"search_notes", "get_note", "synthesize_notes", "detect_collisions"}
         return [t for t in all_tools if t.name in keep]

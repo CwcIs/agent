@@ -223,99 +223,172 @@ def patch_note(note_id: str, body: NotePatch, conn: sqlite3.Connection = Depends
     return {"status": body.status, "id": note_id}
 
 
-# ── GET /digest ───────────────────────────────────────────
-@router.get("/digest")
-async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
-    today = date.today().isoformat()
-
-    # 命中缓存直接返回
-    cached = conn.execute(
-        "SELECT note_count, narrative, follow_ups, cited_notes FROM daily_digests WHERE date = ?", (today,)
-    ).fetchone()
-    if cached:
-        return {
-            "date": today,
-            "noteCount": cached[0],
-            "narrative": cached[1],
-            "followUps": json.loads(cached[2]),
-            "citedNotes": json.loads(cached[3]),
-            "trends": json.loads(cached["trends"] if "trends" in cached.keys() else "[]"),
-            "anomalies": json.loads(cached["anomalies"] if "anomalies" in cached.keys() else "[]"),
-        }
-
-    # 取最近 7 天的 live 笔记（没有"昨天"限制，否则新用户永远没数据）
-    since = (date.today() - timedelta(days=7)).isoformat()
+# ── Shared digest builder ───────────────────────────────────
+async def _build_digest(conn: sqlite3.Connection, days: int, label: str) -> dict:
+    """通用 digest 构建器：daily(7天) / weekly(30天) / monthly(90天)。"""
+    since = (date.today() - timedelta(days=days)).isoformat()
+    limit = 50 if days >= 30 else 30
     rows = conn.execute(
         "SELECT id, title, content, tags_json, created_at FROM notes "
         "WHERE status='live' AND deleted_at IS NULL AND date(created_at) >= ? "
-        "ORDER BY created_at DESC LIMIT 20",
-        (since,),
+        "ORDER BY created_at DESC LIMIT ?",
+        (since, limit),
     ).fetchall()
 
     note_count = len(rows)
 
-    # 没有笔记时返回温和提示，不调 LLM
     if note_count == 0:
-        result = {
-            "date": today,
+        return {
+            "label": label,
             "noteCount": 0,
-            "narrative": "最近还没有笔记，去 Chat 里写第一条吧。",
-            "followUps": ["我想开始记录今天的想法", "帮我新建一条笔记", "笔记库能存什么内容？"],
+            "narrative": "这个时间段还没有笔记，去 Chat 里写一条吧。",
+            "followUps": ["我想开始记录想法", "帮我新建一条笔记", "笔记库能存什么内容？"],
             "citedNotes": [],
             "trends": [],
             "anomalies": [],
+            "collisions": [],
         }
-        _cache_digest(conn, today, result)
-        return result
 
-    # 组装笔记摘要给 LLM
     notes_text = "\n\n".join(
         f"[{i+1}] id={dict(r)['id']}\n标题：{dict(r)['title']}\n内容：{dict(r)['content'][:300]}"
         for i, r in enumerate(rows)
     )
 
-    prompt = f"""以下是用户最近7天的 {note_count} 条笔记：
+    prompt = f"""以下是用户最近 {days} 天的 {note_count} 条笔记：
 
 {notes_text}
 
-请生成一段连贯的中文综述（不要用 bullet 列表，写成自然段落，150字以内），以及恰好3条值得追问的问题。
+请生成：
+1. 一段中文综述（自然段落，150字以内），指出知识演进或话题迁移
+2. 恰好3条值得追问的问题
+3. 1-2个趋势发现（如"话题X反复出现"、"从A→B→C的知识演进"）
+4. 1-2个值得探索的方向
 
-以 JSON 格式返回，结构如下：
+以 JSON 格式返回：
 {{
   "narrative": "综述文字",
   "followUps": ["追问1", "追问2", "追问3"],
-  "citedNotes": [{{"noteId": "id", "title": "标题"}}]
+  "citedNotes": [{{"noteId": "id", "title": "标题"}}],
+  "trends": ["趋势发现1", "趋势发现2"],
+  "explore": ["值得探索的方向1"]
 }}
 
-只返回 JSON，不要其他文字。"""
+只返回 JSON。"""
 
     from src.agent.providers.deepseek import make_deepseek
     llm = make_deepseek()
-    response = await llm.ainvoke([SystemMessage(content="你是用户的个人知识助手，用中文回答。"), HumanMessage(content=prompt)])
-
     try:
+        response = await llm.ainvoke([SystemMessage(content="你是用户的个人知识助手，用中文回答。"), HumanMessage(content=prompt)])
         text = response.content.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
         parsed = json.loads(text)
     except Exception:
         parsed = {
-            "narrative": response.content[:200],
+            "narrative": response.content[:200] if 'response' in dir() else "分析生成失败",
             "followUps": [],
             "citedNotes": [],
+            "trends": [],
+            "explore": [],
         }
 
-    result = {
-        "date": today,
+    # 获取碰撞发现
+    collision_rows = conn.execute(
+        "SELECT id, note_a_id, note_b_id, score, connection, angle FROM idea_collisions "
+        "WHERE created_at >= ? ORDER BY score DESC LIMIT 5",
+        (since,),
+    ).fetchall()
+
+    # 异常检测（纯数据，不调 LLM）
+    anomalies = _detect_anomalies_basic(conn, rows)
+
+    return {
+        "label": label,
         "noteCount": note_count,
-        **parsed,
+        "narrative": parsed.get("narrative", ""),
+        "followUps": parsed.get("followUps", []),
+        "citedNotes": parsed.get("citedNotes", []),
+        "trends": parsed.get("trends", []) + parsed.get("explore", []),
+        "anomalies": anomalies,
+        "collisions": [
+            {
+                "id": r["id"],
+                "note_a_id": r["note_a_id"],
+                "note_b_id": r["note_b_id"],
+                "score": r["score"],
+                "connection": r["connection"],
+                "angle": r["angle"],
+            }
+            for r in collision_rows
+        ],
     }
-    # 趋势检测（纯数据计算，不调 LLM）
-    patterns = _detect_trends(conn, rows)
-    result["trends"] = patterns["trends"]
-    result["anomalies"] = patterns["anomalies"]
+
+
+def _detect_anomalies_basic(conn: sqlite3.Connection, note_rows: list) -> list[str]:
+    """简单异常检测：空白日 + 笔记爆发。纯数据计算。"""
+    if len(note_rows) < 2:
+        return []
+    from collections import defaultdict
+    by_day: dict[str, int] = defaultdict(int)
+    for r in note_rows:
+        day = dict(r)["created_at"][:10]
+        by_day[day] += 1
+    sorted_days = sorted(by_day.keys())
+    anomalies: list[str] = []
+    # 空白日
+    if len(sorted_days) >= 3:
+        start = date.fromisoformat(sorted_days[0])
+        end = date.fromisoformat(sorted_days[-1])
+        d = start
+        while d <= end:
+            if d.isoformat() not in by_day and d != date.today():
+                anomalies.append(f"{d.isoformat()} 无新笔记")
+                if len(anomalies) >= 2:
+                    break
+            d += timedelta(days=1)
+    return anomalies[:3]
+
+
+# ── GET /digest (daily) ───────────────────────────────────
+@router.get("/digest")
+async def get_digest(conn: sqlite3.Connection = Depends(get_conn)):
+    today = date.today().isoformat()
+
+    # 命中缓存直接返回
+    cached = conn.execute(
+        "SELECT note_count, narrative, follow_ups, cited_notes, trends, anomalies FROM daily_digests WHERE date = ?", (today,)
+    ).fetchone()
+    if cached:
+        return {
+            "label": "daily",
+            "date": today,
+            "noteCount": cached["note_count"],
+            "narrative": cached["narrative"],
+            "followUps": json.loads(cached["follow_ups"]),
+            "citedNotes": json.loads(cached["cited_notes"]),
+            "trends": json.loads(cached["trends"] if cached["trends"] else "[]"),
+            "anomalies": json.loads(cached["anomalies"] if cached["anomalies"] else "[]"),
+            "collisions": [],
+        }
+
+    result = await _build_digest(conn, 7, "daily")
+    result["date"] = today
     _cache_digest(conn, today, result)
     return result
+
+
+# ── GET /digest/weekly ────────────────────────────────────
+@router.get("/digest/weekly")
+async def get_weekly_digest(conn: sqlite3.Connection = Depends(get_conn)):
+    """周回顾：最近 30 天笔记的 LLM 分析。"""
+    return await _build_digest(conn, 30, "weekly")
+
+
+# ── GET /digest/monthly ───────────────────────────────────
+@router.get("/digest/monthly")
+async def get_monthly_digest(conn: sqlite3.Connection = Depends(get_conn)):
+    """月回顾：最近 90 天笔记的 LLM 分析。"""
+    return await _build_digest(conn, 90, "monthly")
 
 
 # ── GET /notes/{id}/relations ─────────────────────────────────
@@ -596,6 +669,79 @@ def reject_suggestion(suggestion_id: str, conn: sqlite3.Connection = Depends(get
     return {"status": "rejected", "suggestion_id": suggestion_id}
 
 
+# ── GET /collisions ─────────────────────────────────────
+@router.get("/collisions")
+def list_collisions(limit: int = 20, conn: sqlite3.Connection = Depends(get_conn)):
+    """返回已发现的 idea collisions。"""
+    rows = conn.execute(
+        """
+        SELECT ic.id, ic.score, ic.connection, ic.angle, ic.is_read, ic.detected_by, ic.created_at,
+               na.title as note_a_title, nb.title as note_b_title,
+               ic.note_a_id, ic.note_b_id
+        FROM idea_collisions ic
+        JOIN notes na ON na.id = ic.note_a_id
+        JOIN notes nb ON nb.id = ic.note_b_id
+        ORDER BY ic.score DESC, ic.created_at DESC
+        LIMIT ?
+        """,
+        (min(limit, 50),),
+    ).fetchall()
+    return {
+        "collisions": [
+            {
+                "id": r["id"],
+                "note_a": {"id": r["note_a_id"], "title": r["note_a_title"]},
+                "note_b": {"id": r["note_b_id"], "title": r["note_b_title"]},
+                "score": r["score"],
+                "connection": r["connection"],
+                "angle": r["angle"],
+                "is_read": bool(r["is_read"]),
+                "detected_by": r["detected_by"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+    }
+
+
+# ── GET /tags/aliases ───────────────────────────────────
+@router.get("/tags/aliases")
+def list_tag_aliases_rest(conn: sqlite3.Connection = Depends(get_conn)):
+    """列出所有标签同义词映射。"""
+    rows = conn.execute(
+        "SELECT canonical, alias, created_at FROM tag_aliases ORDER BY canonical, alias"
+    ).fetchall()
+    return {"aliases": [{"canonical": r["canonical"], "alias": r["alias"], "created_at": r["created_at"]} for r in rows]}
+
+
+# ── POST /tags/merge ────────────────────────────────────
+class TagMergeBody(BaseModel):
+    canonical: str
+    aliases: list[str]
+
+
+@router.post("/tags/merge", status_code=201)
+def merge_tags_rest(body: TagMergeBody, conn: sqlite3.Connection = Depends(get_conn)):
+    """合并同义标签到标准名称。"""
+    merged = 0
+    for alias in body.aliases:
+        alias = alias.strip()
+        if not alias or alias == body.canonical:
+            continue
+        tid = str(uuid.uuid4())
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO tag_aliases (id, canonical, alias) VALUES (?, ?, ?)",
+                (tid, body.canonical, alias),
+            )
+            conn.commit()
+            if conn.execute("SELECT id FROM tag_aliases WHERE id = ?", (tid,)).fetchone():
+                merged += 1
+        except Exception:
+            pass
+    return {"status": "ok", "canonical": body.canonical, "merged_count": merged}
+
+
 def _cache_digest(conn: sqlite3.Connection, today: str, payload: dict) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO daily_digests "
@@ -615,58 +761,3 @@ def _cache_digest(conn: sqlite3.Connection, today: str, payload: dict) -> None:
     conn.commit()
 
 
-def _detect_trends(conn: sqlite3.Connection, note_rows: list) -> dict:
-    """
-    分析笔记创建模式，检测趋势和异常。
-    纯数据计算，不调用 LLM。
-    """
-    if len(note_rows) < 2:
-        return {"trends": [], "anomalies": []}
-
-    from collections import defaultdict
-
-    # 按天分组 + 标签统计
-    by_day: dict[str, int] = defaultdict(int)
-    by_tag: dict[str, int] = defaultdict(int)
-    for r in note_rows:
-        d = dict(r)
-        day = d["created_at"][:10]
-        by_day[day] += 1
-        for tag in json.loads(d.get("tags_json", "[]")):
-            by_tag[tag] += 1
-
-    trends: list[str] = []
-    anomalies: list[str] = []
-
-    # 频率趋势：前半 vs 后半
-    sorted_days = sorted(by_day.keys())
-    if len(sorted_days) >= 3:
-        mid = len(sorted_days) // 2
-        first_half = sum(by_day[d] for d in sorted_days[:mid])
-        second_half = sum(by_day[d] for d in sorted_days[mid:])
-        if first_half > 0 and second_half > first_half * 1.5:
-            trends.append(f"笔记频率上升：后段 {second_half} 条 vs 前段 {first_half} 条")
-        elif second_half > 0 and first_half > second_half * 1.5:
-            trends.append(f"笔记频率下降：后段 {second_half} 条 vs 前段 {first_half} 条")
-
-    # 标签热度
-    hot_tags = [(tag, count) for tag, count in sorted(by_tag.items(), key=lambda x: (-x[1], x[0])) if count >= 3]
-    for tag, count in hot_tags:
-        trends.append(f"关注话题「{tag}」出现 {count} 次")
-
-    # 异常空白日（活跃日之间有 0 笔记的日期，最多报 2 个）
-    if len(sorted_days) >= 3:
-        from datetime import date as dt, timedelta
-        active_set = set(sorted_days)
-        start = dt.fromisoformat(sorted_days[0])
-        end = dt.fromisoformat(sorted_days[-1])
-        d = start
-        while d <= end:
-            day_str = d.isoformat()
-            if day_str not in active_set and day_str != dt.today().isoformat():
-                anomalies.append(f"{day_str} 无新笔记")
-                if len(anomalies) >= 2:
-                    break
-            d += timedelta(days=1)
-
-    return {"trends": trends[:5], "anomalies": anomalies[:3]}

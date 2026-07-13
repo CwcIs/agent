@@ -397,7 +397,8 @@ def get_note_relations(note_id: str, conn: sqlite3.Connection = Depends(get_conn
     """返回一条笔记的所有关系（出链 + 入链）。"""
     outgoing = conn.execute(
         """
-        SELECT e.id, e.to_id, n.title as to_title, e.relation, e.created_at
+        SELECT e.id, e.to_id, n.title as to_title, e.relation, e.confidence,
+               e.source, e.evidence, e.status, e.created_at
         FROM edges e
         JOIN notes n ON n.id = e.to_id
         WHERE e.from_id = ? AND n.deleted_at IS NULL
@@ -408,7 +409,8 @@ def get_note_relations(note_id: str, conn: sqlite3.Connection = Depends(get_conn
 
     incoming = conn.execute(
         """
-        SELECT e.id, e.from_id, n.title as from_title, e.relation, e.created_at
+        SELECT e.id, e.from_id, n.title as from_title, e.relation, e.confidence,
+               e.source, e.evidence, e.status, e.created_at
         FROM edges e
         JOIN notes n ON n.id = e.from_id
         WHERE e.to_id = ? AND n.deleted_at IS NULL
@@ -417,11 +419,29 @@ def get_note_relations(note_id: str, conn: sqlite3.Connection = Depends(get_conn
         (note_id,),
     ).fetchall()
 
-    return {
-        "note_id": note_id,
-        "outgoing": [{"id": r[0], "to_id": r[1], "to_title": r[2], "relation": r[3], "created_at": r[4]} for r in outgoing],
-        "incoming": [{"id": r[0], "from_id": r[1], "from_title": r[2], "relation": r[3], "created_at": r[4]} for r in incoming],
-    }
+    def _edge_dict(r):
+        return {
+            "id": r[0], "to_id" if "to_id" in r.keys() else "from_id": r[1] if "to_id" in r.keys() else r[1],
+        }
+    # 手动构建，兼容 Row 对象
+    out_list = []
+    for r in outgoing:
+        out_list.append({
+            "id": r["id"], "to_id": r["to_id"], "to_title": r["to_title"],
+            "relation": r["relation"], "confidence": r["confidence"],
+            "source": r["source"], "evidence": r["evidence"],
+            "status": r["status"], "created_at": r["created_at"],
+        })
+    in_list = []
+    for r in incoming:
+        in_list.append({
+            "id": r["id"], "from_id": r["from_id"], "from_title": r["from_title"],
+            "relation": r["relation"], "confidence": r["confidence"],
+            "source": r["source"], "evidence": r["evidence"],
+            "status": r["status"], "created_at": r["created_at"],
+        })
+
+    return {"note_id": note_id, "outgoing": out_list, "incoming": in_list}
 
 
 # ── GET /traces/recent ─────────────────────────────────────
@@ -740,6 +760,92 @@ def merge_tags_rest(body: TagMergeBody, conn: sqlite3.Connection = Depends(get_c
         except Exception:
             pass
     return {"status": "ok", "canonical": body.canonical, "merged_count": merged}
+
+
+# ── GET /notes/graph ─────────────────────────────────────
+@router.get("/notes/graph")
+def get_graph(center_id: str = "", depth: int = 2, conn: sqlite3.Connection = Depends(get_conn)):
+    """返回笔记关系图谱（BFS）。center_id 为空时返回全图（上限 200 条笔记）。"""
+    depth = min(max(depth, 1), 3)  # 1-3 跳
+
+    if center_id:
+        # BFS 遍历 edges
+        visited: set[str] = set()
+        frontier = {center_id}
+        for _ in range(depth + 1):
+            if not frontier:
+                break
+            visited.update(frontier)
+            placeholders = ",".join("?" * len(frontier))
+            new_ids = set()
+            for fid in frontier:
+                rows = conn.execute(
+                    f"SELECT from_id, to_id FROM edges WHERE (from_id = ? OR to_id = ?) AND status != 'rejected'",
+                    (fid, fid),
+                ).fetchall()
+                for r in rows:
+                    nid = r["to_id"] if r["from_id"] == fid else r["from_id"]
+                    if nid not in visited:
+                        new_ids.add(nid)
+            frontier = new_ids
+        note_ids = visited
+    else:
+        # 全图（限制 200 条笔记）
+        rows = conn.execute(
+            "SELECT id FROM notes WHERE status='live' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 200"
+        ).fetchall()
+        note_ids = {r["id"] for r in rows}
+
+    if not note_ids:
+        return {"nodes": [], "edges": []}
+
+    # 获取笔记节点
+    placeholders = ",".join("?" * len(note_ids))
+    nodes = conn.execute(
+        f"SELECT id, title, tags_json, status, created_at FROM notes WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+        list(note_ids),
+    ).fetchall()
+
+    # 获取节点之间的 edges
+    edges = conn.execute(
+        f"""SELECT id, from_id, to_id, relation, confidence, source, status
+            FROM edges
+            WHERE from_id IN ({placeholders}) AND to_id IN ({placeholders})
+            AND status != 'rejected'""",
+        list(note_ids) + list(note_ids),
+    ).fetchall()
+
+    # 统计每个节点的连接数
+    conn_count: dict[str, int] = {}
+    for e in edges:
+        conn_count[e["from_id"]] = conn_count.get(e["from_id"], 0) + 1
+        conn_count[e["to_id"]] = conn_count.get(e["to_id"], 0) + 1
+
+    return {
+        "nodes": [
+            {
+                "id": n["id"],
+                "title": n["title"],
+                "tags": json.loads(n["tags_json"] or "[]"),
+                "status": n["status"],
+                "connection_count": conn_count.get(n["id"], 0),
+                "created_at": n["created_at"],
+            }
+            for n in nodes
+        ],
+        "edges": [
+            {
+                "id": e["id"],
+                "from_id": e["from_id"],
+                "to_id": e["to_id"],
+                "relation": e["relation"],
+                "confidence": e["confidence"],
+                "source": e["source"],
+                "status": e["status"],
+            }
+            for e in edges
+        ],
+    }
 
 
 def _cache_digest(conn: sqlite3.Connection, today: str, payload: dict) -> None:

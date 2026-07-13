@@ -147,63 +147,89 @@ def make_tools(conn: sqlite3.Connection) -> list:
     async def search_notes(query: str, k: int = 5) -> str:
         """
         搜索笔记库，返回最多 k 条相关笔记（JSON 字符串）。
-        优先使用语义向量搜索；若向量表为空则 fallback 到关键词检索。
+        使用语义搜索 + 关键词检索 → 统一多因子排序（Bayesian + Decay + Graph）。
         只返回 status='live' 的笔记。
-        每篇笔记内容截断至 300 字，防止大笔记库撑爆上下文（审计 A1）。
         """
-        k = min(k, 10)  # 上限 10 条，防止大结果集撑爆上下文
-        results = []
+        from src.lib.ranker import rank_candidates, record_event
 
-        # 尝试向量搜索（审计 R1：asyncio.wait_for 超时 10s）
+        k = min(k, 10)
+        candidates: list[dict] = []
+        semantic_scores: dict[str, float] = {}
+        keyword_scores: dict[str, float] = {}
+
+        # 向量搜索（审计 R1：asyncio.wait_for 超时 10s）
         try:
-            hits = await asyncio.wait_for(search_similar(conn, query, k), timeout=TOOL_TIMEOUT)
+            hits = await asyncio.wait_for(search_similar(conn, query, k * 2), timeout=TOOL_TIMEOUT)
             if hits:
                 ids = [h["note_id"] for h in hits]
+                # distance → similarity mapping for normalized L2
+                for h in hits:
+                    sim = max(0.0, 1.0 - (h["distance"] * h["distance"]) / 2.0)
+                    semantic_scores[h["note_id"]] = round(sim, 3)
+
                 placeholders = ",".join("?" * len(ids))
                 rows = conn.execute(
                     f"SELECT id, title, content, tags_json, created_at FROM notes "
                     f"WHERE id IN ({placeholders}) AND status='live' AND deleted_at IS NULL",
                     ids,
                 ).fetchall()
-                id_order = {nid: i for i, nid in enumerate(ids)}
-                rows_sorted = sorted(rows, key=lambda r: id_order.get(dict(r)["id"], 999))
-                for r in rows_sorted:
+                for r in rows:
                     d = dict(r)
-                    raw = d.get("content", "")
-                    d["content"] = raw[:300] + ("..." if len(raw) > 300 else "")
-                    d["tags"] = json.loads(d.pop("tags_json", "[]"))
-                    results.append(d)
+                    candidates.append(d)
         except asyncio.TimeoutError:
-            return json.dumps({"status": "error", "message": f"向量搜索超时（>{TOOL_TIMEOUT}s），请缩小查询范围重试"}, ensure_ascii=False)
+            return json.dumps({"status": "error", "message": f"向量搜索超时（>{TOOL_TIMEOUT}s）"}, ensure_ascii=False)
         except Exception:
             pass
 
-        # fallback：FTS5 关键词检索
-        if not results:
-            # 转义 FTS5 特殊字符（双引号加倍 + 包裹），避免 OperationalError
-            escaped = '"' + query.replace('"', '""') + '"'
+        # FTS5 关键词检索作为补充
+        escaped = '"' + query.replace('"', '""') + '"'
+        try:
+            fts_rows = conn.execute(
+                """
+                SELECT n.id, n.title, n.content, n.tags_json, n.created_at
+                FROM notes_fts f
+                JOIN notes n ON n.rowid = f.rowid
+                WHERE notes_fts MATCH ?
+                  AND n.status = 'live'
+                  AND n.deleted_at IS NULL
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (escaped, k * 2),
+            ).fetchall()
+            for idx, r in enumerate(fts_rows):
+                d = dict(r)
+                nid = d["id"]
+                if nid not in {c["id"] for c in candidates}:
+                    candidates.append(d)
+                # 排名越前关键词分越高
+                rank_norm = max(0.0, 1.0 - idx / max(len(fts_rows), 1))
+                keyword_scores[nid] = round(rank_norm, 3)
+        except Exception:
+            pass
+
+        if not candidates:
+            return json.dumps([], ensure_ascii=False)
+
+        # 统一排序
+        ranked = rank_candidates(conn, candidates, semantic_scores, keyword_scores)
+        top = ranked[:k]
+
+        # 记录 shown 事件
+        for c in top:
             try:
-                rows = conn.execute(
-                    """
-                    SELECT n.id, n.title, n.content, n.tags_json, n.created_at
-                    FROM notes_fts f
-                    JOIN notes n ON n.rowid = f.rowid
-                    WHERE notes_fts MATCH ?
-                      AND n.status = 'live'
-                      AND n.deleted_at IS NULL
-                    ORDER BY rank
-                    LIMIT ?
-                    """,
-                    (escaped, k),
-                ).fetchall()
-                for r in rows:
-                    d = dict(r)
-                    raw = d.get("content", "")
-                    d["content"] = raw[:300] + ("..." if len(raw) > 300 else "")
-                    d["tags"] = json.loads(d.pop("tags_json", "[]"))
-                    results.append(d)
+                record_event(conn, c["id"], "shown", source="search")
             except Exception:
                 pass
+
+        # 格式化输出
+        results = []
+        for c in top:
+            raw = c.get("content", "")
+            c["content"] = raw[:300] + ("..." if len(raw) > 300 else "")
+            c["tags"] = json.loads(c.pop("tags_json", "[]"))
+            c["_ranker"] = c.get("_ranker", {})
+            results.append(c)
 
         return json.dumps(results, ensure_ascii=False)
 

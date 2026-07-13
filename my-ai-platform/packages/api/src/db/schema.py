@@ -1,21 +1,21 @@
 # ============================================================
-# SQLite 12 表 Schema（Phase 1 + 2 + 3 + 4A-1 + 4.3 + 4.4）
-# 对应 MD §8.5 Phase 1 全部表 + §4.3 数据模型
+# SQLite 14 表 Schema（Phase 1 + 2 + 3 + 4）
 #
 # 表：
-#   1. notes           — 笔记主表（status / superseded_by / deleted_at）
-#   2. messages        — 对话消息（session_id / agent_id / prompt_version）
-#   3. daily_digests   — 每日 AI 回顾（惰性触发 + 缓存）
-#   4. llm_calls       — LLM 调用审计（计费 + 重试 + 排查）
-#   5. llm_errors      — JSON 解析 / tool_use 失败记录
+#   1. notes           — 笔记主表
+#   2. messages        — 对话消息
+#   3. daily_digests   — 每日 AI 回顾
+#   4. llm_calls       — LLM 调用审计
+#   5. llm_errors      — JSON 解析 / tool_use 失败
 #   6. eval_runs       — 黄金集运行记录
-#   7. embedding_meta  — embedding 模型指纹（换模型只加一行）
-#   8. edges           — 笔记关系图谱（wikilink / similar / evolved_from / supersedes / contradicts / related）
-#                       Phase 4A-1 新增 confidence / source / evidence / status 列
-#   9. worklist        — A2A 任务持久化（进程崩了不丢 handoff）
-#  10. pending_suggestions — 待确认的关系/标签建议（Phase 4A-1 新增）
-#  11. idea_collisions — 意外关联发现（Phase 4.3 新增）
-#  12. tag_aliases     — 标签同义词（Phase 4.4 新增）
+#   7. embedding_meta  — embedding 模型指纹
+#   8. edges           — 笔记关系图谱（Phase 4A-1: +confidence/source/evidence/status）
+#   9. worklist        — A2A 任务持久化
+#  10. pending_suggestions — 待确认的关系/标签建议（Phase 4A-1）
+#  11. idea_collisions — 意外关联发现（Phase 4.3）
+#  12. tag_aliases     — 标签同义词（Phase 4.4）
+#  13. retrieval_events— 检索反馈事件（Phase 4B: shown/cited/clicked/accepted/rejected）
+#  14. note_stats      — 笔记排序统计（Phase 4B: exposure/success/last_accessed/last_reinforced）
 # ============================================================
 
 import sqlite3
@@ -215,6 +215,29 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
         CREATE INDEX IF NOT EXISTS idx_tag_aliases_canonical ON tag_aliases(canonical);
+
+        -- ⑬ retrieval_events — 检索反馈事件（Phase 4B）
+        CREATE TABLE IF NOT EXISTS retrieval_events (
+            id         TEXT PRIMARY KEY,
+            note_id    TEXT NOT NULL REFERENCES notes(id),
+            session_id TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL CHECK(event_type IN ('shown','cited','clicked','accepted','rejected','saved_from')),
+            source     TEXT NOT NULL DEFAULT ''
+                           CHECK(source IN ('search','context','digest','graph','manual','')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_retrieval_events_note ON retrieval_events(note_id, event_type);
+
+        -- ⑭ note_stats — 笔记排序统计（Phase 4B）
+        CREATE TABLE IF NOT EXISTS note_stats (
+            note_id              TEXT PRIMARY KEY REFERENCES notes(id),
+            exposure_count       INTEGER NOT NULL DEFAULT 0,
+            success_count        INTEGER NOT NULL DEFAULT 0,
+            last_accessed_at     TEXT,
+            last_reinforced_at   TEXT,
+            created_at           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at           TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
 
         -- ⑨ worklist — A2A 任务持久化（进程崩了不丢 handoff）
         CREATE TABLE IF NOT EXISTS worklist (

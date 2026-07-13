@@ -8,6 +8,7 @@ import NoteDetailPanel from "./views/NoteDetailPanel.vue";
 import DailyDigestPanel from "./views/DailyDigestPanel.vue";
 import CommercialPrototype from "./views/CommercialPrototype.vue";
 import TraceConsole from "./views/TraceConsole.vue";
+import GraphView from "./views/GraphView.vue";
 import TopStatusBar from "./components/TopStatusBar.vue";
 import ToastProvider from "./components/ToastProvider.vue";
 
@@ -28,6 +29,7 @@ const noteListRef = ref<InstanceType<typeof LeftRail> | null>(null);
 const toastRef = ref<InstanceType<typeof ToastProvider> | null>(null);
 const showCommercialPrototype = ref(false);
 const showTraceConsole = ref(false);
+const showGraphView = ref(false);
 
 // Daily digest state
 const showDigest = ref(false);
@@ -53,6 +55,20 @@ function handleNoteUpdated() {
   noteListRef.value?.refresh();
 }
 
+function handleGraphSelectNote(noteId: string) {
+  // Close graph and open note in detail
+  showGraphView.value = false;
+  fetch(`/notes/${noteId}/relations`).catch(() => {});
+  // Try to find title and show in detail
+  fetch(`/notes`).then(r => r.json()).then(data => {
+    const note = (data.notes || []).find((n: Note) => n.id === noteId);
+    if (note) {
+      selectedNote.value = note;
+      drawerOpen.value = true;
+    }
+  }).catch(() => {});
+}
+
 // ── Global Keyboard Shortcuts ──
 function onKeydown(e: KeyboardEvent) {
   // Ctrl+/ — focus chat input
@@ -73,9 +89,16 @@ function onKeydown(e: KeyboardEvent) {
     showTraceConsole.value = !showTraceConsole.value;
     return;
   }
-  // Escape — close drawer or Trace Console
+  // Ctrl+Shift+G — toggle GraphView
+  if (e.ctrlKey && e.shiftKey && e.key === "G") {
+    e.preventDefault();
+    showGraphView.value = !showGraphView.value;
+    return;
+  }
+  // Escape — close drawer or overlays
   if (e.key === "Escape") {
     if (showTraceConsole.value) { showTraceConsole.value = false; return; }
+    if (showGraphView.value) { showGraphView.value = false; return; }
     if (drawerOpen.value) { handleDetailClose(); return; }
     return;
   }
@@ -85,6 +108,7 @@ onMounted(() => {
   const params = new URLSearchParams(window.location.search);
   showCommercialPrototype.value = params.get("prototype") === "1";
   showTraceConsole.value = params.get("trace") === "1";
+  showGraphView.value = params.get("graph") === "1";
   document.addEventListener("keydown", onKeydown);
   fetchDailyBadge();
 });
@@ -116,6 +140,11 @@ provide("toast", toast);
   <!-- Trace Console (full-screen overlay, toggled via Ctrl+Shift+T or ?trace=1) -->
   <div v-else-if="showTraceConsole" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
     <TraceConsole />
+  </div>
+
+  <!-- GraphView (full-screen overlay, toggled via Ctrl+Shift+G or ?graph=1) -->
+  <div v-else-if="showGraphView" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
+    <GraphView @select-note="handleGraphSelectNote" />
   </div>
 
   <AppShell v-else :sidebar-open="sidebarOpen" :drawer-open="drawerOpen">

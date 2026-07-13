@@ -48,5 +48,5 @@ class KnowledgeAgent(BaseAgent):
 
     def _make_tools(self) -> list:
         all_tools = make_tools(self.conn)
-        keep = {"get_notes_summary", "search_notes", "get_note", "synthesize_notes", "save_note", "archive_note", "detect_collisions", "suggest_tags", "web_search", "import_webpage"}
+        keep = {"get_notes_summary", "search_notes", "get_note", "synthesize_notes", "save_note", "archive_note", "detect_collisions", "suggest_tags", "web_search", "import_webpage", "review_note", "get_due_reviews", "suggest_gaps", "suggest_writing"}
         return [t for t in all_tools if t.name in keep]

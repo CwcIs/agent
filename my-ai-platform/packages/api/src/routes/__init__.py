@@ -292,6 +292,25 @@ async def _build_digest(conn: sqlite3.Connection, days: int, label: str) -> dict
             "explore": [],
         }
 
+    # 待复习笔记
+    due_reviews = conn.execute(
+        """SELECT id, title, review_count, review_interval FROM notes
+           WHERE status='live' AND deleted_at IS NULL
+             AND last_reviewed_at IS NOT NULL
+             AND julianday('now') - julianday(last_reviewed_at) > review_interval
+           LIMIT 5"""
+    ).fetchall()
+
+    # 写作建议
+    tag_clusters: dict[str, list[str]] = {}
+    for r in rows:
+        for tag in json.loads(r["tags_json"] or "[]"):
+            tag_clusters.setdefault(tag, []).append(r["id"])
+    writing_suggestions = []
+    for tag, nids in sorted(tag_clusters.items(), key=lambda x: -len(x[1])):
+        if len(nids) >= 5:
+            writing_suggestions.append({"topic": tag, "note_count": len(nids)})
+
     # 获取碰撞发现
     collision_rows = conn.execute(
         "SELECT id, note_a_id, note_b_id, score, connection, angle FROM idea_collisions "
@@ -310,6 +329,10 @@ async def _build_digest(conn: sqlite3.Connection, days: int, label: str) -> dict
         "citedNotes": parsed.get("citedNotes", []),
         "trends": parsed.get("trends", []) + parsed.get("explore", []),
         "anomalies": anomalies,
+        "dueReviews": [{"id": r["id"], "title": r["title"],
+                         "review_count": r["review_count"] or 0,
+                         "interval_days": r["review_interval"] or 1} for r in due_reviews],
+        "writingSuggestions": writing_suggestions[:3],
         "collisions": [
             {
                 "id": r["id"],
@@ -1128,6 +1151,114 @@ def source_group(source_url: str = "", source_file: str = "", conn: sqlite3.Conn
                     "word_count": r["word_count"], "created_at": r["created_at"]} for r in rows],
         "total": len(rows),
     }
+
+
+# ── GET /user/profile ───────────────────────────────────
+@router.get("/user/profile")
+def get_user_profile(conn: sqlite3.Connection = Depends(get_conn)):
+    """返回用户知识画像：兴趣分布、活跃时段、思考风格、常用 Agent。"""
+    from collections import defaultdict
+
+    # 兴趣分布
+    tag_rows = conn.execute(
+        "SELECT tags_json FROM notes WHERE status='live' AND deleted_at IS NULL"
+    ).fetchall()
+    tag_counts: dict[str, int] = defaultdict(int)
+    for r in tag_rows:
+        for tag in json.loads(r[0] or "[]"):
+            tag_counts[tag] += 1
+    top_interests = sorted(tag_counts.items(), key=lambda x: -x[1])[:8]
+
+    # 活跃时段
+    time_rows = conn.execute(
+        "SELECT created_at FROM messages WHERE role='user' ORDER BY created_at DESC LIMIT 200"
+    ).fetchall()
+    hour_counts: dict[int, int] = defaultdict(int)
+    for r in time_rows:
+        try:
+            hour = int(r["created_at"][11:13])
+            hour_counts[hour] += 1
+        except Exception:
+            pass
+    peak_hours = sorted(hour_counts.items(), key=lambda x: -x[1])[:3] if hour_counts else []
+
+    # 笔记总量
+    total_notes = conn.execute(
+        "SELECT COUNT(*) FROM notes WHERE status='live' AND deleted_at IS NULL"
+    ).fetchone()[0]
+    total_archived = conn.execute(
+        "SELECT COUNT(*) FROM notes WHERE status='archived' AND deleted_at IS NULL"
+    ).fetchone()[0]
+    total_superseded = conn.execute(
+        "SELECT COUNT(*) FROM notes WHERE status='superseded' AND deleted_at IS NULL"
+    ).fetchone()[0]
+
+    # Agent 使用统计
+    agent_rows = conn.execute(
+        "SELECT agent_id, COUNT(*) as cnt FROM llm_calls WHERE agent_id != '' GROUP BY agent_id ORDER BY cnt DESC"
+    ).fetchall()
+    agent_usage = [{"agent": r["agent_id"], "calls": r["cnt"]} for r in agent_rows]
+
+    # LLM 总成本
+    cost_row = conn.execute(
+        "SELECT SUM(cost_usd) as total, COUNT(*) as total_calls FROM llm_calls"
+    ).fetchone()
+    total_cost = round(cost_row["total"] or 0, 4) if cost_row else 0
+
+    return {
+        "interests": [{"tag": t, "count": c} for t, c in top_interests],
+        "peak_hours": [{"hour": h, "count": c} for h, c in peak_hours],
+        "notes": {"live": total_notes, "archived": total_archived, "superseded": total_superseded},
+        "agent_usage": agent_usage,
+        "total_cost_usd": total_cost,
+        "total_llm_calls": cost_row["total_calls"] if cost_row else 0,
+    }
+
+
+# ── GET /user/smart-badges ──────────────────────────────
+@router.get("/user/smart-badges")
+def get_smart_badges(conn: sqlite3.Connection = Depends(get_conn)):
+    """返回智能提醒：待复习、碰撞发现、知识缺口、写作建议。适合前端轮询。"""
+    badges: list[dict] = []
+
+    # 待复习
+    due = conn.execute(
+        """SELECT COUNT(*) as cnt FROM notes
+           WHERE status='live' AND deleted_at IS NULL
+             AND last_reviewed_at IS NOT NULL
+             AND julianday('now') - julianday(last_reviewed_at) > review_interval"""
+    ).fetchone()
+    if due and due["cnt"] > 0:
+        badges.append({"type": "review", "label": f"{due['cnt']} 条笔记待复习", "priority": "high"})
+
+    # 未读碰撞
+    collisions = conn.execute(
+        "SELECT COUNT(*) as cnt FROM idea_collisions WHERE is_read = 0"
+    ).fetchone()
+    if collisions and collisions["cnt"] > 0:
+        badges.append({"type": "collision", "label": f"{collisions['cnt']} 个意外关联未读", "priority": "medium"})
+
+    # 冷门话题（7 天未更新）
+    stale = conn.execute(
+        """SELECT COUNT(*) as cnt FROM notes
+           WHERE status='live' AND deleted_at IS NULL
+             AND julianday('now') - julianday(created_at) BETWEEN 7 AND 30
+             AND id NOT IN (
+               SELECT note_a_id FROM idea_collisions
+               UNION SELECT note_b_id FROM idea_collisions
+             )"""
+    ).fetchone()
+    if stale and stale["cnt"] > 5:
+        badges.append({"type": "explore", "label": f"{stale['cnt']} 条笔记超过 7 天未被关联", "priority": "low"})
+
+    # pending suggestions
+    pending = conn.execute(
+        "SELECT COUNT(*) as cnt FROM pending_suggestions WHERE status='pending'"
+    ).fetchone()
+    if pending and pending["cnt"] > 0:
+        badges.append({"type": "suggestion", "label": f"{pending['cnt']} 条建议等待确认", "priority": "medium"})
+
+    return {"badges": badges}
 
 
 def _cache_digest(conn: sqlite3.Connection, today: str, payload: dict) -> None:

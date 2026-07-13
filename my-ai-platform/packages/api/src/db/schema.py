@@ -316,6 +316,17 @@ def init_db(conn: sqlite3.Connection) -> None:
 
     conn.commit()
 
+    # ── 迁移（Phase 6.3）：notes 增加复习间隔列 ──
+    for col, default, col_type in [
+        ("last_reviewed_at", "NULL", "TEXT"),
+        ("review_interval", "1", "INTEGER"),
+        ("review_count", "0", "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE notes ADD COLUMN {col} {col_type} DEFAULT {default}")
+        except Exception:
+            pass
+
     # ── 迁移（Phase 5.3）：notes 增加 source_url/source_file/source_type/word_count ──
     for col, default, col_type in [
         ("source_url", "''", "TEXT"),

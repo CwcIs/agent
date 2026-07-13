@@ -36,6 +36,7 @@ const showDigest = ref(false);
 const dailyNoteCount = ref(0);
 const dailyTrendCount = ref(0);
 const dailyAnomalyCount = ref(0);
+const smartBadges = ref<Array<{ type: string; label: string; priority: string }>>([]);
 
 function handleFollowUp(q: string) {
   chatRef.value?.sendWithText(q);
@@ -117,12 +118,19 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 
 async function fetchDailyBadge() {
   try {
-    const resp = await fetch("/digest");
-    if (resp.ok) {
-      const data = await resp.json();
+    const [digestResp, badgeResp] = await Promise.all([
+      fetch("/digest"),
+      fetch("/user/smart-badges"),
+    ]);
+    if (digestResp.ok) {
+      const data = await digestResp.json();
       dailyNoteCount.value = data.noteCount ?? 0;
       dailyTrendCount.value = data.trends?.length ?? 0;
       dailyAnomalyCount.value = data.anomalies?.length ?? 0;
+    }
+    if (badgeResp.ok) {
+      const data = await badgeResp.json();
+      smartBadges.value = data.badges || [];
     }
   } catch { /* ignore */ }
 }
@@ -173,6 +181,7 @@ provide("toast", toast);
           :daily-note-count="dailyNoteCount"
           :daily-trend-count="dailyTrendCount"
           :daily-anomaly-count="dailyAnomalyCount"
+          :smart-badges="smartBadges"
           @toggle-digest="showDigest = !showDigest"
         >
           <template #toggle>

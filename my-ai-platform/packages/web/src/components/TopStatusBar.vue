@@ -8,6 +8,7 @@ const props = defineProps<{
   dailyNoteCount?: number;
   dailyTrendCount?: number;
   dailyAnomalyCount?: number;
+  smartBadges?: Array<{ type: string; label: string; priority: string }>;
 }>();
 
 const emit = defineEmits<{
@@ -15,7 +16,8 @@ const emit = defineEmits<{
 }>();
 
 const hasDigestHighlights = computed(() =>
-  (props.dailyTrendCount ?? 0) > 0 || (props.dailyAnomalyCount ?? 0) > 0
+  (props.dailyTrendCount ?? 0) > 0 || (props.dailyAnomalyCount ?? 0) > 0 ||
+  (props.smartBadges?.length ?? 0) > 0
 );
 </script>
 
@@ -31,13 +33,16 @@ const hasDigestHighlights = computed(() =>
     <div class="flex-1" />
 
     <button
-      v-if="dailyNoteCount"
+      v-if="dailyNoteCount || smartBadges?.length"
       class="daily-badge"
       :class="{ active: hasDigestHighlights }"
       @click="emit('toggleDigest')"
     >
-      Today · {{ dailyNoteCount }} notes
+      <template v-if="dailyNoteCount">Today · {{ dailyNoteCount }} notes</template>
       <template v-if="dailyTrendCount"> · {{ dailyTrendCount }} themes</template>
+      <template v-for="b in smartBadges?.filter(b => b.priority === 'high')" :key="b.type">
+        · {{ b.label }}
+      </template>
     </button>
 
     <span class="status-dot" :class="{ streaming }" />

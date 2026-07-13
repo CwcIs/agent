@@ -1,21 +1,22 @@
 # ============================================================
-# SQLite 14 表 Schema（Phase 1 + 2 + 3 + 4）
+# SQLite 15 表 Schema（Phase 1-5）
 #
 # 表：
-#   1. notes           — 笔记主表
+#   1. notes           — 笔记主表（Phase 5.3: +source_url/source_file/source_type/word_count）
 #   2. messages        — 对话消息
 #   3. daily_digests   — 每日 AI 回顾
 #   4. llm_calls       — LLM 调用审计
 #   5. llm_errors      — JSON 解析 / tool_use 失败
 #   6. eval_runs       — 黄金集运行记录
 #   7. embedding_meta  — embedding 模型指纹
-#   8. edges           — 笔记关系图谱（Phase 4A-1: +confidence/source/evidence/status）
+#   8. edges           — 笔记关系图谱
 #   9. worklist        — A2A 任务持久化
-#  10. pending_suggestions — 待确认的关系/标签建议（Phase 4A-1）
-#  11. idea_collisions — 意外关联发现（Phase 4.3）
-#  12. tag_aliases     — 标签同义词（Phase 4.4）
-#  13. retrieval_events— 检索反馈事件（Phase 4B: shown/cited/clicked/accepted/rejected）
-#  14. note_stats      — 笔记排序统计（Phase 4B: exposure/success/last_accessed/last_reinforced）
+#  10. pending_suggestions — 待确认的关系/标签建议
+#  11. idea_collisions — 意外关联发现
+#  12. tag_aliases     — 标签同义词
+#  13. retrieval_events— 检索反馈事件
+#  14. note_stats      — 笔记排序统计
+#  15. source_trace    — 外部来源追踪（Phase 5.3）
 # ============================================================
 
 import sqlite3
@@ -239,6 +240,20 @@ def init_db(conn: sqlite3.Connection) -> None:
             updated_at           TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
+        -- ⑮ source_trace — 外部来源追踪（Phase 5.3）
+        CREATE TABLE IF NOT EXISTS source_trace (
+            id          TEXT PRIMARY KEY,
+            note_id     TEXT NOT NULL REFERENCES notes(id),
+            source_type TEXT NOT NULL CHECK(source_type IN ('web','file','user','agent_generated')),
+            source_url  TEXT NOT NULL DEFAULT '',
+            source_file TEXT NOT NULL DEFAULT '',
+            content_hash TEXT NOT NULL DEFAULT '',
+            fetch_status TEXT NOT NULL DEFAULT 'ok'
+                             CHECK(fetch_status IN ('ok','partial','failed')),
+            imported_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_source_trace_note ON source_trace(note_id);
+
         -- ⑨ worklist — A2A 任务持久化（进程崩了不丢 handoff）
         CREATE TABLE IF NOT EXISTS worklist (
             id              TEXT PRIMARY KEY,
@@ -296,6 +311,20 @@ def init_db(conn: sqlite3.Connection) -> None:
     ]:
         try:
             conn.execute(f"ALTER TABLE edges ADD COLUMN {col} {col_type} NOT NULL DEFAULT {default}")
+        except Exception:
+            pass  # 列已存在
+
+    conn.commit()
+
+    # ── 迁移（Phase 5.3）：notes 增加 source_url/source_file/source_type/word_count ──
+    for col, default, col_type in [
+        ("source_url", "''", "TEXT"),
+        ("source_file", "''", "TEXT"),
+        ("source_type", "'user'", "TEXT"),
+        ("word_count", "0", "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE notes ADD COLUMN {col} {col_type} NOT NULL DEFAULT {default}")
         except Exception:
             pass  # 列已存在
 

@@ -10,6 +10,10 @@ interface Note {
   tags: string[];
   status: string;
   created_at: string;
+  source_url?: string;
+  source_file?: string;
+  source_type?: string;
+  word_count?: number;
 }
 
 interface Relation {
@@ -256,7 +260,20 @@ function renderMarkdown(text: string): string {
           >
             {{ note.status === 'archived' ? '已归档' : '有效' }}
           </span>
+          <span v-if="note.source_type && note.source_type !== 'user'" class="text-[10px] px-1.5 py-0.5 rounded-full font-medium border"
+            :style="{ background: 'rgba(124,156,255,0.08)', color: 'var(--agent-knowledge)', borderColor: 'rgba(124,156,255,0.12)' }">
+            {{ note.source_type === 'web' ? '🌐 Web' : note.source_type === 'file' ? '📁 File' : note.source_type }}
+          </span>
           <span class="text-[10px]" style="color: var(--text-muted)">{{ formatDate(note.created_at) }}</span>
+          <span v-if="note.word_count" class="text-[10px]" style="color: var(--text-tertiary)">{{ note.word_count }} 字</span>
+        </div>
+
+        <!-- 来源链接 -->
+        <div v-if="note.source_url" class="text-[10px] truncate">
+          <a :href="note.source_url" target="_blank" class="hover:underline" style="color: var(--agent-knowledge)">🔗 {{ note.source_url }}</a>
+        </div>
+        <div v-else-if="note.source_file" class="text-[10px]" style="color: var(--text-muted)">
+          📄 {{ note.source_file }}
         </div>
 
         <!-- 标签 -->

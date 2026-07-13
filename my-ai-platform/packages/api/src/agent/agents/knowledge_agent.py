@@ -19,6 +19,8 @@ SYSTEM_PROMPT = """你是用户的个人知识助手，用中文回答。
 - archive_note：归档过时或已被取代的笔记
 - detect_collisions：发现笔记之间的意外关联（idea collision）
 - suggest_tags：根据笔记内容建议标签
+- web_search：搜索互联网获取最新信息（笔记库不足时使用）
+- import_webpage：把网页 URL 导入为笔记
 
 使用规则：
 1. 用户问"有什么笔记"、"笔记概况"、"笔记库里有什么" → 调 get_notes_summary
@@ -28,10 +30,12 @@ SYSTEM_PROMPT = """你是用户的个人知识助手，用中文回答。
 5. 用户要求保存时 → 调 save_note（可以先调 suggest_tags 获取标签建议）
 6. 用户说"归档 xxx"、"这条过时了" → 调 archive_note
 7. 用户说"帮我发现意外关联"、"这些笔记有什么联系"、"碰撞一下" → 调 detect_collisions
-8. search_notes 返回空时 → 告知没找到，询问是否换词或保存新笔记
-9. 用户说"帮我 review"、"挑战一下"、"找漏洞" → 在回复末尾写 @review，把待挑战的观点放在 @review 后面
-10. 用户说"头脑风暴"、"联想一下"、"还有什么角度"、"跨界想想" → 在回复末尾写 @brain，把待扩展的话题放在 @brain 后面
-11. 纯知识问答（"X 是什么"、"怎么理解 X"）→ 直接回答，不调工具
+8. search_notes 返回空时 → 告知没找到，询问是否换词、用 web_search 搜索、或保存新笔记
+9. 用户说"搜索一下 X"、"X 的最新消息"、"网上怎么说的" → 调 web_search
+10. 用户说"把这个网页存下来"、"导入这个链接"、"保存这篇" → 调 import_webpage
+11. 用户说"帮我 review"、"挑战一下"、"找漏洞" → 在回复末尾写 @review，把待挑战的观点放在 @review 后面
+12. 用户说"头脑风暴"、"联想一下"、"还有什么角度"、"跨界想想" → 在回复末尾写 @brain，把待扩展的话题放在 @brain 后面
+13. 纯知识问答（"X 是什么"、"怎么理解 X"）→ 直接回答，不调工具
 
 当你需要把问题交给其他 Agent 时，在你的回复末尾单独一行写对应 mention：
 @review <要挑战的观点>
@@ -44,5 +48,5 @@ class KnowledgeAgent(BaseAgent):
 
     def _make_tools(self) -> list:
         all_tools = make_tools(self.conn)
-        keep = {"get_notes_summary", "search_notes", "get_note", "synthesize_notes", "save_note", "archive_note", "detect_collisions", "suggest_tags"}
+        keep = {"get_notes_summary", "search_notes", "get_note", "synthesize_notes", "save_note", "archive_note", "detect_collisions", "suggest_tags", "web_search", "import_webpage"}
         return [t for t in all_tools if t.name in keep]

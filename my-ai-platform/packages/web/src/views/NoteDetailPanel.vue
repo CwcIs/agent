@@ -41,6 +41,7 @@ const RELATION_LABELS: Record<string, string> = {
   evolved_from: "衍生自",
   supersedes: "取代",
   contradicts: "矛盾",
+  similar: "相似",
   related: "相关",
 };
 

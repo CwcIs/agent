@@ -7,6 +7,7 @@ import ChatView from "./views/ChatView.vue";
 import NoteDetailPanel from "./views/NoteDetailPanel.vue";
 import DailyDigestPanel from "./views/DailyDigestPanel.vue";
 import CommercialPrototype from "./views/CommercialPrototype.vue";
+import TraceConsole from "./views/TraceConsole.vue";
 import TopStatusBar from "./components/TopStatusBar.vue";
 import ToastProvider from "./components/ToastProvider.vue";
 
@@ -26,6 +27,7 @@ const chatRef = ref<InstanceType<typeof ChatView> | null>(null);
 const noteListRef = ref<InstanceType<typeof LeftRail> | null>(null);
 const toastRef = ref<InstanceType<typeof ToastProvider> | null>(null);
 const showCommercialPrototype = ref(false);
+const showTraceConsole = ref(false);
 
 // Daily digest state
 const showDigest = ref(false);
@@ -65,15 +67,24 @@ function onKeydown(e: KeyboardEvent) {
     noteListRef.value?.focusSearch();
     return;
   }
-  // Escape — close drawer
-  if (e.key === "Escape" && drawerOpen.value) {
-    handleDetailClose();
+  // Ctrl+Shift+T — toggle Trace Console
+  if (e.ctrlKey && e.shiftKey && e.key === "T") {
+    e.preventDefault();
+    showTraceConsole.value = !showTraceConsole.value;
+    return;
+  }
+  // Escape — close drawer or Trace Console
+  if (e.key === "Escape") {
+    if (showTraceConsole.value) { showTraceConsole.value = false; return; }
+    if (drawerOpen.value) { handleDetailClose(); return; }
     return;
   }
 }
 
 onMounted(() => {
-  showCommercialPrototype.value = new URLSearchParams(window.location.search).get("prototype") === "1";
+  const params = new URLSearchParams(window.location.search);
+  showCommercialPrototype.value = params.get("prototype") === "1";
+  showTraceConsole.value = params.get("trace") === "1";
   document.addEventListener("keydown", onKeydown);
   fetchDailyBadge();
 });
@@ -101,6 +112,11 @@ provide("toast", toast);
 
 <template>
   <CommercialPrototype v-if="showCommercialPrototype" />
+
+  <!-- Trace Console (full-screen overlay, toggled via Ctrl+Shift+T or ?trace=1) -->
+  <div v-else-if="showTraceConsole" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
+    <TraceConsole />
+  </div>
 
   <AppShell v-else :sidebar-open="sidebarOpen" :drawer-open="drawerOpen">
     <!-- Left Rail -->

@@ -1,5 +1,5 @@
 # ============================================================
-# SQLite 9 表 Schema（Phase 1 + 2 + 3 + 4）
+# SQLite 10 表 Schema（Phase 1 + 2 + 3 + 4A-1）
 # 对应 MD §8.5 Phase 1 全部表 + §4.3 数据模型
 #
 # 表：
@@ -10,18 +10,10 @@
 #   5. llm_errors      — JSON 解析 / tool_use 失败记录
 #   6. eval_runs       — 黄金集运行记录
 #   7. embedding_meta  — embedding 模型指纹（换模型只加一行）
-#   8. edges           — 笔记关系图谱（wikilink / evolved_from / supersedes / contradicts）
+#   8. edges           — 笔记关系图谱（wikilink / similar / evolved_from / supersedes / contradicts / related）
+#                       Phase 4A-1 新增 confidence / source / evidence / status 列
 #   9. worklist        — A2A 任务持久化（进程崩了不丢 handoff）
-#
-# 为什么这些表？（MD §8.5）：
-#   notes / messages 是业务，edges 是关系，剩下 5 张全是工程兜底。
-#   没有它们就只能"感觉"AI 在变好，没法量化。
-#   Phase 1 就要把"可观测"扎进 schema，不等 Phase 3 才补。
-#
-# 为什么 embedding 拆出去？（MD §4.3）：
-#   Phase 2 换 embedding 模型时，向量塞在 notes 里要全表回填。
-#   拆成独立表 + embedding_meta 指纹，换模型时新增一行 meta、
-#   后台慢慢回算，老向量继续服务旧查询。
+#  10. pending_suggestions — 待确认的关系/标签建议（Phase 4A-1 新增）
 # ============================================================
 
 import sqlite3
@@ -162,17 +154,40 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
-        -- ⑧ edges — 笔记关系图谱（wikilink / evolved_from / supersedes / contradicts）
+        -- ⑧ edges — 笔记关系图谱（wikilink / evolved_from / supersedes / contradicts / similar / related）
         CREATE TABLE IF NOT EXISTS edges (
             id         TEXT PRIMARY KEY,
             from_id    TEXT NOT NULL REFERENCES notes(id),
             to_id      TEXT NOT NULL REFERENCES notes(id),
-            relation   TEXT NOT NULL CHECK(relation IN ('wikilink','evolved_from','supersedes','contradicts','related')),
+            relation   TEXT NOT NULL CHECK(relation IN ('wikilink','evolved_from','supersedes','contradicts','similar','related')),
+            confidence REAL NOT NULL DEFAULT 1.0,
+            source     TEXT NOT NULL DEFAULT 'manual'
+                           CHECK(source IN ('manual','wikilink','embedding','llm','system')),
+            evidence   TEXT NOT NULL DEFAULT '',
+            status     TEXT NOT NULL DEFAULT 'confirmed'
+                           CHECK(status IN ('confirmed','suggested','rejected')),
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             UNIQUE(from_id, to_id, relation)
         );
         CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id);
         CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);
+
+        -- ⑩ pending_suggestions — 待确认的关系/标签建议
+        CREATE TABLE IF NOT EXISTS pending_suggestions (
+            id         TEXT PRIMARY KEY,
+            from_id    TEXT NOT NULL REFERENCES notes(id),
+            to_id      TEXT REFERENCES notes(id),
+            relation   TEXT NOT NULL DEFAULT 'related',
+            confidence REAL NOT NULL DEFAULT 0.5,
+            evidence   TEXT NOT NULL DEFAULT '',
+            suggestion_type TEXT NOT NULL DEFAULT 'relation'
+                              CHECK(suggestion_type IN ('relation','tag_merge','tag_suggest','contradiction')),
+            status     TEXT NOT NULL DEFAULT 'pending'
+                           CHECK(status IN ('pending','accepted','rejected')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            decided_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_suggestions_status ON pending_suggestions(status);
 
         -- ⑨ worklist — A2A 任务持久化（进程崩了不丢 handoff）
         CREATE TABLE IF NOT EXISTS worklist (
@@ -221,5 +236,17 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''")
     except Exception:
         pass  # 列已存在
+
+    # ── 迁移（Phase 4A-1）：edges 增加 confidence / source / evidence / status 列 ──
+    for col, default, col_type in [
+        ("confidence", "1.0", "REAL"),
+        ("source", "'manual'", "TEXT"),
+        ("evidence", "''", "TEXT"),
+        ("status", "'confirmed'", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE edges ADD COLUMN {col} {col_type} NOT NULL DEFAULT {default}")
+        except Exception:
+            pass  # 列已存在
 
     conn.commit()

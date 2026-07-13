@@ -94,18 +94,19 @@ Phase 4           Phase 5           Phase 6           Phase 7           Phase 8
 知识生态深化      外部知识接入       主动智能           工具生态扩展       平台化与打磨
 ─────┬─────      ─────┬─────       ─────┬─────       ─────┬─────       ─────┬─────
      │               │                  │                  │                  │
- 4.1 关系图谱      5.1 Web 导入      6.1 定时推送       7.1 Web 搜索      8.1 性能优化
- 4.2 知识可视化    5.2 文件导入      6.2 知识缺口       7.2 日历集成      8.2 可观测面板
- 4.3 Idea Collision 5.3 来源追踪    6.3 复习提醒       7.3 自定义工具     8.3 笔记导出
- 4.4 标签智能      5.4 引用链        6.4 写作提示       7.4 多模态笔记     8.4 插件系统
- 4.5 Daily Digest  5.5 外部搜索集成  6.5 用户画像       7.5 代码执行       8.5 安全加固
-     2.0                                                                   8.6 文档
+ 4.0 Trace Console 5.1 Web 导入      6.1 定时推送       7.1 Web 搜索      8.1 性能优化
+ 4.1 可信关系层    5.2 文件导入      6.2 知识缺口       7.2 日历集成      8.2 Admin 面板
+ 4.2 Ranker        5.3 来源追踪      6.3 复习提醒       7.3 自定义工具     8.3 笔记导出
+ 4.3 Collision     5.4 引用链        6.4 写作提示       7.4 多模态笔记     8.4 插件系统
+ 4.4 标签智能      5.5 外部搜索集成  6.5 用户画像       7.5 代码执行       8.5 安全加固
+ 4.5 Digest 2.0                                                            8.6 文档
+ 4.6 GraphView
      │               │                  │                  │                  │
 ─────┴─────      ─────┴─────       ─────┴─────       ─────┴─────       ─────┴─────
-  2-3 周           2-3 周            2-3 周            3-4 周            2-3 周
+  3-4 周           2-3 周            2-3 周            3-4 周            2-3 周
 ```
 
-**总预估**：12–16 周（约 3–4 个月），按个人业余项目节奏。
+**总预估**：13–17 周（约 3–4 个月），按个人业余项目节奏。Phase 4 增加 Trace / Ranker 后变重，但这是后续智能化不黑箱的必要成本。
 
 ### 设计原则
 
@@ -116,6 +117,44 @@ Phase 4           Phase 5           Phase 6           Phase 7           Phase 8
 5. **不破坏现有 evals**：每个 Phase 结束时 golden 集通过率不得低于当前基线。
 6. **可信关系优先于炫酷可视化**：先把 `edges` 的来源、置信度、确认状态做扎实，再做 GraphView / 碰撞洞察。
 7. **安全前置，不等 Phase 8**：凡是引入外部 URL、用户自定义工具、代码执行、插件加载的功能，必须在对应 Phase 内同时完成最小安全边界。
+8. **Trace 先于智能化**：任何会改变召回、排序、路由、工具调用的能力，都必须能在 Trace Console 中解释"为什么发生"。
+
+### 总体架构主线
+
+Phase 4-8 不再按"功能列表"推进，而按五条稳定链路演进：
+
+| 链路 | 目标 | 关键产物 | 优先级 |
+|------|------|----------|--------|
+| Capture Chain | 把碎片想法/网页/文件统一变成可信笔记 | `NoteCandidate` / import pipeline / source_trace | P0 |
+| Retrieval Chain | 让 Agent 拿到正确、可解释、成本可控的上下文 | hybrid search / graph expansion / Bayesian Ranker / decay | P0 |
+| Reasoning Chain | 区分 ReAct 工具循环与 prompt-chained handoff | react_tool_loop / router / verdict / worklist | P0 |
+| Insight Chain | 从笔记网络中产生趋势、碰撞、复习、写作提示 | idea_collisions / digest / review scheduler | P1 |
+| Extension Chain | 让系统安全接入外部工具和执行能力 | web_search / custom_tools / plugins / sandbox | P2 |
+
+统一运行时链路：
+
+```
+User Intent
+  → Intent Router
+  → Context Assembler
+  → Hybrid Retrieval
+  → Graph Expansion
+  → Bayesian + Decay Ranker
+  → Agent ReAct Loop
+  → Tool / Handoff / Final
+  → Trace Events
+  → Feedback Update
+```
+
+关键边界：
+
+| 概念 | 定义 | 触发者 |
+|------|------|--------|
+| ReAct Tool Loop | 单 Agent 内部 Think → Act → Observe → Decide | 模型自主决定 tool_use |
+| Prompt-Chained Handoff | Agent 输出 `@agent` 后由 router 字符串扫描调度 | 外部 router |
+| Retrieval Ranking | 多路召回候选统一打分排序 | ranker |
+| Knowledge Graph | 记录笔记关系与置信度，不直接替代笔记事实 | edges / suggestions |
+| Trace Console | 解释每次路由、检索、工具、handoff、排序和失败原因 | runtime events |
 
 ### 跨 Phase 核心链路：图谱 + 贝叶斯排序 + 衰减模型
 
@@ -194,21 +233,77 @@ Agent 场景权重不同：
 
 ### Phase 4 调整后的落地顺序
 
-Phase 4 不再一口气追求完整 GraphView，而是先建立"可信关系层"：
+Phase 4 不再一口气追求完整 GraphView，而是先建立"可解释的可信关系层"：
 
-1. **Phase 4A：可信关系层（优先）**
+0. **Phase 4A-0：Trace Console / Retrieval Debugger（最高优先级）**
+   - 先做最小 Trace 看板：按 `trace_id` 查看一次完整运行链路
+   - 展示 Agent hops / tool calls / retrieved notes / rank factors / verdict
+   - 为后续 Bayesian Ranker、图谱扩散、A2A 调试提供解释入口
+
+1. **Phase 4A-1：可信关系层（优先）**
    - 升级 `edges` schema：补齐 `confidence` / `source` / `evidence` / `status`
    - 支持 `similar` 关系，或明确把语义相似统一映射到 `related`
    - 建立 `pending_suggestions`，让自动发现的关系先进入"待确认"状态
    - 在笔记详情里展示局部关系，而不是先做全局力导向图
 
-2. **Phase 4B：Idea Collision（第二优先级）**
+2. **Phase 4B：Retrieval Ranker + Idea Collision（第二优先级）**
+   - 引入统一 ranker，记录 `retrieval_events` 并聚合 `note_stats`
    - 先做手动触发 + Daily Digest 展示
    - 暂不在每次 `save_note` 后强制调用 LLM，避免成本和延迟失控
 
 3. **Phase 4C：GraphView / 可视化（可延后）**
    - 等关系质量稳定后再做全局图谱
    - 第一版只支持中心节点 BFS，不急着做全量图和复杂交互
+
+### 4.0 Trace Console / Retrieval Debugger（4.0）
+
+#### 目标
+把 ReAct、A2A、检索排序、工具调用从"日志里能查"变成"页面上能解释"。
+
+Trace Console 是 Phase 4A 的第一刀：没有它，后续图谱扩散、贝叶斯排序、衰减模型都会变成黑箱。
+
+#### 实现计划
+
+```
+后端 API:
+  GET /traces/recent?limit=50
+    → 返回最近 trace 列表：trace_id / session_id / agents / status / latency_ms / cost_usd / started_at
+
+  GET /traces/{trace_id}
+    → 返回完整 timeline：
+      - user_input
+      - context_assemble
+      - retrieval_candidates
+      - rank_factors
+      - agent_start / agent_end
+      - tool_start / tool_end
+      - handoff_detected
+      - verdict
+      - error
+
+存储策略:
+  第一版复用 llm_calls / llm_errors / messages / worklist / retrieval_events 聚合生成。
+  如果 timeline 组装困难，再新增 trace_events 表，不一开始过度建模。
+
+前端页面:
+  Admin / Trace Console
+    - 左侧 Trace List
+    - 右侧 Timeline Detail
+    - 支持按 trace_id / session_id / agent_id / status 过滤
+
+Retrieval Debugger:
+  对每条候选笔记展示：
+    semantic_score / keyword_score / graph_score / bayesian_score / recency_score / final_score
+    source: vector | fts | graph | manual
+    reason: 为什么进入上下文
+```
+
+#### 验收标准
+- [ ] 能打开最近 50 条 trace 列表
+- [ ] 能查看单条 trace 的 Agent / Tool / Handoff timeline
+- [ ] 能看到一次检索中候选笔记的分数组成
+- [ ] 能看到 verdict 终止原因：natural_end / missing_handoff / loop_detected / error
+- [ ] Trace Console 不影响主链路失败：看板挂了，聊天仍能工作
 
 ### 4.1 关系图谱自动发现（4.1）
 
@@ -274,7 +369,57 @@ Phase 4 不再一口气追求完整 GraphView，而是先建立"可信关系层"
 - [ ] `evolved_from` 通过 `supersedes_id` 参数创建
 - [ ] pending_suggestions 表写入 + accept/reject 流程跑通
 
-### 4.2 知识图谱可视化（4.2）
+### 4.2 统一 Ranker + retrieval_events（4.2）
+
+#### 目标
+把 `search_notes` / `assemble_context()` 从"谁先召回谁靠前"升级为统一的多因子排序层，并把每次排序写入 Trace。
+
+#### 实现计划
+
+```
+新增模块:
+  src/retrieval/ranker.py
+    rank_candidates(query, candidates, agent_id, trace_id)
+      → 返回带分数拆解的候选列表
+
+候选来源:
+  - FTS5 keyword hits
+  - sqlite-vec semantic hits
+  - graph neighbors
+  - explicit note references
+
+分数拆解:
+  semantic_score
+  keyword_score
+  graph_score
+  bayesian_score
+  recency_score
+  final_score
+  reason
+
+事件记录:
+  retrieval_events:
+    trace_id / query / note_id / rank / scores_json / event_type / created_at
+
+统计聚合:
+  note_stats:
+    note_id / exposure_count / success_count
+    / last_accessed_at / last_reinforced_at / importance_score
+
+接入点:
+  search_notes → 返回 rank 后结果
+  assemble_context → 使用 ranker 控制上下文注入顺序
+  Trace Console → 展示每条候选为什么被选中
+```
+
+#### 验收标准
+- [ ] `search_notes` 返回结果包含 `final_score` 和 `reason`
+- [ ] `assemble_context()` 使用统一 ranker 排序
+- [ ] `retrieval_events` 能记录 shown 事件
+- [ ] Trace Console 能展示一次检索的分数组成
+- [ ] 不改变现有 evals 的通过率基线
+
+### 4.6 知识图谱可视化（4.6，延后）
 
 #### 目标
 前端新增一个 **GraphView**，以力导向图展示笔记关系网络。
@@ -466,13 +611,15 @@ schema 改动:
 
 | # | 功能 | 优先级 | 预估 |
 |---|------|--------|------|
-| 4.1 | 关系图谱自动发现 | 🟡 | 3-4 天 |
-| 4.2 | 知识图谱可视化 | 🟡 | 3-4 天 |
-| 4.3 | Idea Collision 升级 | 🔴 | 4-5 天 |
+| 4.0 | Trace Console / Retrieval Debugger | 🔴 | 2-3 天 |
+| 4.1 | 可信关系层 + 自动关系建议 | 🔴 | 3-4 天 |
+| 4.2 | 统一 Ranker + retrieval_events | 🔴 | 3-4 天 |
+| 4.3 | Idea Collision 升级 | 🟡 | 4-5 天 |
 | 4.4 | 标签智能 | 🟢 | 2-3 天 |
-| 4.5 | Daily Digest 2.0 | 🔴 | 3-4 天 |
+| 4.5 | Daily Digest 2.0 | 🟡 | 3-4 天 |
+| 4.6 | 知识图谱可视化（延后） | 🟢 | 3-4 天 |
 
-**Phase 4 总计**：约 2–3 周
+**Phase 4 总计**：约 3–4 周。若时间不足，4.6 可顺延到 Phase 8 打磨阶段。
 
 ---
 
@@ -1025,6 +1172,8 @@ Sandbox 设计:
 #### 目标
 一个管理后台页面，能看到系统的运行状态、成本、使用情况。
 
+> 边界：Phase 4.0 Trace Console 负责"单次链路解释"；Phase 8.2 AdminView 负责"长期趋势和系统概览"。两者共享底层 trace / llm_calls / retrieval_events 数据，但 UI 目标不同。
+
 #### 实现计划
 
 ```
@@ -1295,6 +1444,7 @@ Phase 1-3 (10 张 SQLite 对象；9 张业务/审计表 + 1 张 FTS 虚表):
   edges, worklist
 
 Phase 4 新增:
+  trace_events         — 可选：当现有表难以聚合 timeline 时再引入
   pending_suggestions  — 关系建议（待用户确认）
   idea_collisions      — 意外关联发现
   tag_aliases          — 标签同义词

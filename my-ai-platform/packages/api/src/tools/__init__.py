@@ -90,9 +90,49 @@ def _task_done_callback(task: asyncio.Task) -> None:
 
 
 async def _background_embed(conn: sqlite3.Connection, note_id: str, title: str, content: str) -> None:
-    """后台异步写入向量 embedding，失败静默忽略。"""
+    """后台异步写入向量 embedding + 自动检测相似笔记，失败静默忽略。"""
     try:
         await upsert_embedding(conn, note_id, f"{title}\n{content}")
+
+        # Phase 4A-1：查找与新笔记最相似的 top 5 已有笔记
+        from src.lib.embeddings import search_similar
+        hits = await search_similar(conn, f"{title}\n{content}", k=5)
+        for h in hits:
+            if h["note_id"] == note_id:
+                continue  # 跳过自己（刚写入的向量）
+            # normalized L2: distance 0=identical, 2=opposite
+            # similarity ≈ 1 - distance²/2
+            dist = h["distance"]
+            sim = 1.0 - (dist * dist) / 2.0
+
+            if sim > 0.82:
+                # 高相似度：直接创建 suggested similar edge
+                edge_id = str(uuid.uuid4())
+                try:
+                    conn.execute(
+                        """INSERT OR IGNORE INTO edges
+                           (id, from_id, to_id, relation, confidence, source, evidence, status)
+                           VALUES (?, ?, ?, 'similar', ?, 'embedding', ?, 'suggested')""",
+                        (edge_id, note_id, h["note_id"], round(sim, 3),
+                         f"embedding similarity {sim:.3f} (distance={dist:.4f})"),
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
+            elif sim > 0.5:
+                # 中等相似度：存入 pending_suggestions 等用户确认
+                sid = str(uuid.uuid4())
+                try:
+                    conn.execute(
+                        """INSERT OR IGNORE INTO pending_suggestions
+                           (id, from_id, to_id, relation, confidence, evidence, suggestion_type)
+                           VALUES (?, ?, ?, 'similar', ?, ?, 'relation')""",
+                        (sid, note_id, h["note_id"], round(sim, 3),
+                         f"embedding similarity {sim:.3f} (distance={dist:.4f})"),
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -168,11 +208,12 @@ def make_tools(conn: sqlite3.Connection) -> list:
         return json.dumps(results, ensure_ascii=False)
 
     @tool
-    async def save_note(title: str, content: str, tags: Optional[str] = "") -> str:
+    async def save_note(title: str, content: str, tags: Optional[str] = "", supersedes_id: Optional[str] = "") -> str:
         """
         把一条新笔记保存到笔记库。
         tags 用逗号分隔，例如 '产品,增长'。
         内容中的 [[笔记标题]] 语法会自动创建双链关系。
+        supersedes_id 可选：传入旧笔记 ID 表示本笔记替代/升级了旧笔记，会自动创建 evolved_from 关系并将旧笔记标记为 superseded。
         返回新笔记的 id 和创建的双链边。
         """
         note_id = str(uuid.uuid4())
@@ -190,13 +231,43 @@ def make_tools(conn: sqlite3.Connection) -> list:
         wikilink_titles = _parse_wikilinks(content)
         edges_created = _create_wikilink_edges(conn, note_id, wikilink_titles)
 
-        # 后台异步写入 embedding，不阻塞 save_note 返回
+        # ── Phase 4A-1：supersedes_id → evolved_from edge + 标记旧笔记 ──
+        superseded_title = ""
+        if supersedes_id and supersedes_id.strip():
+            old_row = conn.execute(
+                "SELECT id, title FROM notes WHERE id = ? AND deleted_at IS NULL",
+                (supersedes_id.strip(),),
+            ).fetchone()
+            if old_row:
+                superseded_title = old_row["title"]
+                # 标记旧笔记为 superseded
+                conn.execute(
+                    "UPDATE notes SET status='superseded', superseded_by=?, updated_at=datetime('now','localtime') WHERE id=?",
+                    (note_id, old_row["id"]),
+                )
+                # 创建 evolved_from edge
+                edge_id = str(uuid.uuid4())
+                try:
+                    conn.execute(
+                        """INSERT OR IGNORE INTO edges
+                           (id, from_id, to_id, relation, confidence, source, evidence, status)
+                           VALUES (?, ?, ?, 'evolved_from', 1.0, 'manual', ?, 'confirmed')""",
+                        (edge_id, old_row["id"], note_id, f"superseded by note {note_id}"),
+                    )
+                    conn.commit()
+                    edges_created.append({"id": edge_id, "from_id": old_row["id"], "to_id": note_id, "relation": "evolved_from", "to_title": title})
+                except Exception:
+                    pass
+            conn.commit()
+
+        # 后台异步写入 embedding + 相似度检测，不阻塞 save_note 返回
         task = asyncio.create_task(_background_embed(conn, note_id, title, content))
         _background_tasks.add(task)
         task.add_done_callback(_task_done_callback)
         return json.dumps({
             "status": "ok", "id": note_id, "title": title,
             "edges_created": len(edges_created),
+            "superseded_title": superseded_title,
         }, ensure_ascii=False)
 
     @tool
@@ -416,4 +487,87 @@ def make_tools(conn: sqlite3.Connection) -> list:
             "incoming": [{"from_id": r[0], "from_title": r[1], "relation": r[2], "created_at": r[3]} for r in incoming],
         }, ensure_ascii=False)
 
-    return [search_notes, save_note, get_note, archive_note, get_notes_summary, synthesize_notes, get_note_relations]
+    @tool
+    def suggest_relation(from_id: str, to_id: str, relation: str = "related") -> str:
+        """
+        建议在两个笔记之间建立关系。适合 LLM 发现两篇笔记存在逻辑关联时调用。
+        relation 可选: related / contradicts / evolved_from / supersedes。
+        建议的关系需要用户确认后才会变为 confirmed。
+        返回 JSON：{ status, suggestion_id }
+        """
+        valid = {"related", "contradicts", "evolved_from", "supersedes", "similar"}
+        if relation not in valid:
+            return json.dumps({"status": "error", "message": f"relation 必须是 {valid}"}, ensure_ascii=False)
+
+        # 检查两篇笔记都存在
+        for nid in (from_id, to_id):
+            row = conn.execute(
+                "SELECT id FROM notes WHERE id = ? AND deleted_at IS NULL", (nid,)
+            ).fetchone()
+            if not row:
+                return json.dumps({"status": "error", "message": f"笔记 {nid} 不存在或已删除"}, ensure_ascii=False)
+
+        sid = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO pending_suggestions
+               (id, from_id, to_id, relation, confidence, evidence, suggestion_type)
+               VALUES (?, ?, ?, ?, 0.6, 'LLM suggested', 'relation')""",
+            (sid, from_id, to_id, relation),
+        )
+        conn.commit()
+        return json.dumps({"status": "ok", "suggestion_id": sid, "from_id": from_id, "to_id": to_id, "relation": relation}, ensure_ascii=False)
+
+    @tool
+    def accept_suggestion(suggestion_id: str) -> str:
+        """
+        接受一条待确认的建议（关系或标签合并）。
+        接受后：关系建议 → 写入 edges 表（confirmed）；标签合并 → 执行合并。
+        返回 JSON：{ status, suggestion_id, action }
+        """
+        row = conn.execute(
+            "SELECT * FROM pending_suggestions WHERE id = ? AND status = 'pending'",
+            (suggestion_id,),
+        ).fetchone()
+        if not row:
+            return json.dumps({"status": "error", "message": f"建议 {suggestion_id} 不存在或已处理"}, ensure_ascii=False)
+
+        r = dict(row)
+        if r["suggestion_type"] == "relation":
+            edge_id = str(uuid.uuid4())
+            conn.execute(
+                """INSERT OR IGNORE INTO edges
+                   (id, from_id, to_id, relation, confidence, source, evidence, status)
+                   VALUES (?, ?, ?, ?, ?, 'llm', ?, 'confirmed')""",
+                (edge_id, r["from_id"], r["to_id"], r["relation"], r["confidence"], r["evidence"]),
+            )
+            conn.commit()
+            conn.execute(
+                "UPDATE pending_suggestions SET status='accepted', decided_at=datetime('now','localtime') WHERE id=?",
+                (suggestion_id,),
+            )
+            conn.commit()
+            return json.dumps({"status": "ok", "suggestion_id": suggestion_id, "action": "created_edge", "edge_id": edge_id}, ensure_ascii=False)
+        else:
+            return json.dumps({"status": "error", "message": f"不支持的建议类型: {r['suggestion_type']}"}, ensure_ascii=False)
+
+    @tool
+    def reject_suggestion(suggestion_id: str) -> str:
+        """
+        拒绝一条待确认的建议。
+        返回 JSON：{ status, suggestion_id }
+        """
+        row = conn.execute(
+            "SELECT id FROM pending_suggestions WHERE id = ? AND status = 'pending'",
+            (suggestion_id,),
+        ).fetchone()
+        if not row:
+            return json.dumps({"status": "error", "message": f"建议 {suggestion_id} 不存在或已处理"}, ensure_ascii=False)
+
+        conn.execute(
+            "UPDATE pending_suggestions SET status='rejected', decided_at=datetime('now','localtime') WHERE id=?",
+            (suggestion_id,),
+        )
+        conn.commit()
+        return json.dumps({"status": "ok", "suggestion_id": suggestion_id, "action": "rejected"}, ensure_ascii=False)
+
+    return [search_notes, save_note, get_note, archive_note, get_notes_summary, synthesize_notes, get_note_relations, suggest_relation, accept_suggestion, reject_suggestion]

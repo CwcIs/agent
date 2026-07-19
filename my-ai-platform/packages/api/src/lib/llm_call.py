@@ -69,17 +69,40 @@ def _record_call(
     status: str,
     trace_id: str = "",
     agent_id: str = "",
-) -> None:
+    error_message: str = "",
+) -> str:
+    from src.lib.trace import record_trace_event
+
     cost = _calc_cost(model, input_tokens, output_tokens)
+    call_id = str(uuid.uuid4())
     conn.execute(
         """INSERT INTO llm_calls
            (id, session_id, prompt_version, model,
             input_tokens, output_tokens, cost_usd, latency_ms, status, trace_id, agent_id)
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        (str(uuid.uuid4()), session_id, prompt_version, model,
+        (call_id, session_id, prompt_version, model,
          input_tokens, output_tokens, cost, latency_ms, status, trace_id, agent_id),
     )
     conn.commit()
+    record_trace_event(
+        conn,
+        "llm_call",
+        phase_trace_id=trace_id,
+        session_id=session_id,
+        agent_id=agent_id,
+        status=status,
+        name=model,
+        payload={
+            "llm_call_id": call_id,
+            "prompt_version": prompt_version,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": round(cost, 8),
+            "latency_ms": latency_ms,
+            "error_message": error_message,
+        },
+    )
+    return call_id
 
 
 async def call_llm(
@@ -142,7 +165,7 @@ async def call_llm(
                 # 4xx 非 429：记录后直接抛，不重试
                 status = "error"
                 _record_call(conn, session_id, prompt_version, model_name,
-                             0, 0, latency_ms, status, trace_id, agent_id)
+                             0, 0, latency_ms, status, trace_id, agent_id, exc_str)
                 logger.error("llm_call 4xx session=%s err=%s", session_id, exc_str)
                 raise
 
@@ -150,7 +173,7 @@ async def call_llm(
             if attempt < MAX_ATTEMPTS - 1:
                 status = "retry"
                 _record_call(conn, session_id, prompt_version, model_name,
-                             0, 0, latency_ms, status, trace_id, agent_id)
+                             0, 0, latency_ms, status, trace_id, agent_id, exc_str)
                 wait = 2 ** attempt  # 1s, 2s, 4s
                 logger.warning(
                     "llm_call retry session=%s attempt=%d wait=%ds err=%s",
@@ -160,6 +183,6 @@ async def call_llm(
             else:
                 status = "error"
                 _record_call(conn, session_id, prompt_version, model_name,
-                             0, 0, latency_ms, status, trace_id, agent_id)
+                             0, 0, latency_ms, status, trace_id, agent_id, exc_str)
 
     raise RuntimeError(f"call_llm failed after {MAX_ATTEMPTS} attempts") from last_exc

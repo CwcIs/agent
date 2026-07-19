@@ -39,6 +39,7 @@ def _build_sse_generator(user_input: str, session_id: str, prompt_version: str, 
                         "data": json.dumps(
                             {
                                 "name": event["name"],
+                                "tool_call_id": event.get("tool_call_id", ""),
                                 "input": event.get("input", {}),
                                 "agentId": event["agentId"],
                             },
@@ -52,6 +53,7 @@ def _build_sse_generator(user_input: str, session_id: str, prompt_version: str, 
                         "data": json.dumps(
                             {
                                 "name": event["name"],
+                                "tool_call_id": event.get("tool_call_id", ""),
                                 "result": event.get("result", ""),
                                 "agentId": event["agentId"],
                             },
@@ -66,6 +68,31 @@ def _build_sse_generator(user_input: str, session_id: str, prompt_version: str, 
                             {
                                 "agentId": event["agentId"],
                                 "trace_id": event.get("trace_id", ""),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+
+                elif etype == "warning":
+                    yield {
+                        "event": "warning",
+                        "data": json.dumps(
+                            {
+                                "message": event.get("message", ""),
+                                "agentId": event.get("agentId", ""),
+                                "shadow": event.get("shadow", False),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+
+                elif etype == "verdict":
+                    yield {
+                        "event": "verdict",
+                        "data": json.dumps(
+                            {
+                                "reason": event.get("reason", ""),
+                                "agentId": event.get("agentId", ""),
                             },
                             ensure_ascii=False,
                         ),
@@ -95,7 +122,7 @@ def _build_sse_generator(user_input: str, session_id: str, prompt_version: str, 
 class ChatStreamBody(BaseModel):
     input: str
     session_id: str = ""
-    prompt_version: str = "v1"
+    prompt_version: str = "v2"
 
 
 # ── POST /chat/stream ─────────────────────────────────────
@@ -117,7 +144,7 @@ async def chat_stream_post(body: ChatStreamBody):
 async def chat_stream_get(
     input: str = "",
     session_id: str = "",
-    prompt_version: str = "v1",
+    prompt_version: str = "v2",
 ):
     """GET 版本 — 保留兼容，短文本仍可用。"""
     if not input:
@@ -128,4 +155,3 @@ async def chat_stream_get(
     sid = session_id or str(uuid.uuid4())
     tid = str(uuid.uuid4())
     return EventSourceResponse(_build_sse_generator(input, sid, prompt_version, tid))
-

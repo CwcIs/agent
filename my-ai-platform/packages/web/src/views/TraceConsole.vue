@@ -1,360 +1,445 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
+import {
+  eventLabel,
+  eventSummary,
+  formatCost,
+  formatLatency,
+  formatTraceTime,
+  trustLabel,
+} from "../trace/model";
+import type { TraceDetail, TraceEvent, TraceSummary, TrustStatus } from "../trace/model";
 
-interface TraceSummary {
-  trace_id: string;
-  session_id: string;
-  agents: string[];
-  status: string;
-  call_count: number;
-  latency_ms: number;
-  cost_usd: number;
-  started_at: string;
-  ended_at: string;
-}
-
-interface TraceDetail {
-  trace_id: string;
-  session_id: string;
-  user_input: { content: string; created_at: string } | null;
-  agents: Array<{
-    agent_id: string;
-    call_count: number;
-    timeline: Array<{
-      type: string;
-      agent_id: string;
-      timestamp: string;
-      model?: string;
-      input_tokens?: number;
-      output_tokens?: number;
-      cost_usd?: number;
-      latency_ms?: number;
-      status?: string;
-    }>;
-  }>;
-  errors: Array<{
-    id: string;
-    error_type: string;
-    error_msg: string;
-    created_at: string;
-  }>;
-  summary: {
-    total_tokens: number;
-    total_cost_usd: number;
-    total_latency_ms: number;
-    call_count: number;
-    agent_count: number;
-    verdict: string;
-    started_at: string;
-    ended_at: string;
-  };
-}
+type DetailTab = "timeline" | "evidence" | "raw";
 
 const traces = ref<TraceSummary[]>([]);
 const selectedTrace = ref<TraceDetail | null>(null);
 const traceLoading = ref(false);
 const listLoading = ref(true);
+const loadError = ref("");
 const filterAgent = ref("");
 const filterStatus = ref("");
 const filterText = ref("");
+const activeTab = ref<DetailTab>("timeline");
+const detailTabs: DetailTab[] = ["timeline", "evidence", "raw"];
 
 const filteredTraces = computed(() => {
   let list = traces.value;
   if (filterAgent.value) {
-    list = list.filter(t => t.agents.some(a => a.includes(filterAgent.value)));
+    list = list.filter((trace) => trace.agents.includes(filterAgent.value));
   }
   if (filterStatus.value) {
-    list = list.filter(t => t.status === filterStatus.value);
+    list = list.filter((trace) => trace.status === filterStatus.value);
   }
   if (filterText.value) {
-    const q = filterText.value.toLowerCase();
-    list = list.filter(t => t.trace_id.includes(q) || t.session_id.includes(q));
+    const query = filterText.value.toLowerCase();
+    list = list.filter(
+      (trace) =>
+        trace.trace_id.toLowerCase().includes(query) ||
+        trace.session_id.toLowerCase().includes(query),
+    );
   }
   return list;
 });
 
 const uniqueAgents = computed(() => {
-  const s = new Set<string>();
-  traces.value.forEach(t => t.agents.forEach(a => s.add(a)));
-  return [...s].sort();
+  const agents = new Set<string>();
+  traces.value.forEach((trace) => trace.agents.forEach((agent) => agents.add(agent)));
+  return [...agents].sort();
 });
 
-onMounted(() => {
-  refreshList();
+const trustCounts = computed(() => {
+  const counts: Record<TrustStatus, number> = {
+    verified: 0,
+    degraded: 0,
+    partial: 0,
+    compromised: 0,
+  };
+  traces.value.forEach((trace) => {
+    counts[trace.status] = (counts[trace.status] || 0) + 1;
+  });
+  return counts;
 });
+
+function trustClass(status: TrustStatus): string {
+  return {
+    verified: "trust-ok",
+    degraded: "trust-warn",
+    partial: "trust-partial",
+    compromised: "trust-bad",
+  }[status];
+}
+
+function eventClass(event: TraceEvent): string {
+  if (event.status === "error" || event.event_type === "error") return "event-bad";
+  if (event.status === "warning" || event.event_type === "warning") return "event-warn";
+  if (["retrieval_completed", "citation_verified", "verdict"].includes(event.event_type)) return "event-accent";
+  return "event-neutral";
+}
+
+function prettyPayload(event: TraceEvent): string {
+  return JSON.stringify(event.payload || {}, null, 2);
+}
 
 async function refreshList() {
   listLoading.value = true;
+  loadError.value = "";
   try {
-    const resp = await fetch("/traces/recent?limit=50");
-    if (resp.ok) {
-      const data = await resp.json();
-      traces.value = data.traces || [];
-    }
-  } catch { /* ignore */ }
-  finally { listLoading.value = false; }
+    const response = await fetch("/traces/recent?limit=100");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    traces.value = data.traces || [];
+  } catch (error) {
+    loadError.value = `无法加载 Trace 列表：${String(error)}`;
+  } finally {
+    listLoading.value = false;
+  }
 }
 
 async function selectTrace(traceId: string) {
   traceLoading.value = true;
-  selectedTrace.value = null;
+  loadError.value = "";
+  activeTab.value = "timeline";
   try {
-    const resp = await fetch(`/traces/${traceId}`);
-    if (resp.ok) {
-      selectedTrace.value = await resp.json();
-    }
-  } catch { /* ignore */ }
-  finally { traceLoading.value = false; }
-}
-
-function formatLatency(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60000).toFixed(1)}m`;
-}
-
-function formatCost(usd: number): string {
-  if (usd < 0.001) return "< $0.001";
-  return `$${usd.toFixed(4)}`;
-}
-
-function formatTime(ts: string): string {
-  if (!ts) return "";
-  const d = new Date(ts + "Z");
-  return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-function verdictBadgeClass(verdict: string): string {
-  switch (verdict) {
-    case "natural_end": return "badge-ok";
-    case "error":
-    case "missing_handoff":
-    case "loop_detected": return "badge-err";
-    default: return "badge-neutral";
+    const response = await fetch(`/traces/${traceId}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    selectedTrace.value = await response.json();
+  } catch (error) {
+    selectedTrace.value = null;
+    loadError.value = `无法加载 Trace 详情：${String(error)}`;
+  } finally {
+    traceLoading.value = false;
   }
 }
 
-function verdictLabel(verdict: string): string {
-  switch (verdict) {
-    case "natural_end": return "正常结束";
-    case "error": return "错误";
-    case "missing_handoff": return "未处理 handoff";
-    case "loop_detected": return "检测到循环";
-    default: return verdict;
-  }
-}
+onMounted(refreshList);
 </script>
 
 <template>
-  <div class="flex flex-col h-full min-h-0" style="color: var(--text-primary)">
-    <!-- Header -->
-    <div class="flex items-center justify-between px-4 py-2.5 border-b shrink-0" style="border-color: var(--border-subtle)">
-      <div class="flex items-center gap-2">
-        <span class="text-xs font-semibold uppercase tracking-wider" style="color: var(--text-muted)">Trace Console</span>
-        <span class="text-[10px] px-1.5 py-0.5 rounded-full" style="background: rgba(255,255,255,0.05); color: var(--text-muted)">
-          {{ traces.length }} traces
+  <div class="flex h-full min-h-0 flex-col" style="color: var(--text-primary)">
+    <header class="flex shrink-0 items-center gap-3 border-b px-4 py-2.5" style="border-color: var(--border-subtle)">
+      <div>
+        <h1 class="text-xs font-semibold">Trace Console</h1>
+        <p class="text-[10px]" style="color: var(--text-muted)">全链路证据、完整性与成本审计</p>
+      </div>
+      <div class="ml-3 flex items-center gap-2 text-[10px]" style="color: var(--text-muted)">
+        <span>{{ traces.length }} 条</span>
+        <span class="trust-ok px-1.5 py-0.5">{{ trustCounts.verified }} 已校验</span>
+        <span v-if="trustCounts.compromised" class="trust-bad px-1.5 py-0.5">
+          {{ trustCounts.compromised }} 校验失败
         </span>
       </div>
       <button
-        class="text-[10px] px-2 py-1 rounded border hover:brightness-110 transition-all"
-        style="color: var(--text-muted); border-color: var(--border-subtle)"
+        class="ml-auto border px-2 py-1 text-[10px] transition-opacity hover:opacity-80"
+        style="border-color: var(--border-subtle); color: var(--text-secondary)"
+        title="刷新 Trace"
         @click="refreshList"
       >
-        Refresh
+        刷新
       </button>
+    </header>
+
+    <div v-if="loadError" class="shrink-0 border-b px-4 py-2 text-[11px] event-bad">
+      {{ loadError }}
     </div>
 
-    <div class="flex flex-1 min-h-0">
-      <!-- Left: Trace List -->
-      <div class="w-80 shrink-0 border-r flex flex-col min-h-0" style="border-color: var(--border-subtle)">
-        <!-- Filters -->
-        <div class="px-3 py-2 space-y-1.5 border-b shrink-0" style="border-color: var(--border-subtle)">
+    <div class="flex min-h-0 flex-1 flex-col lg:flex-row">
+      <aside class="flex max-h-[42%] w-full shrink-0 flex-col border-b lg:max-h-none lg:w-80 lg:border-b-0 lg:border-r" style="border-color: var(--border-subtle)">
+        <div class="grid shrink-0 grid-cols-2 gap-1.5 border-b p-3" style="border-color: var(--border-subtle)">
           <input
             v-model="filterText"
-            type="text"
-            placeholder="Search trace/session ID..."
-            class="w-full text-[10px] px-2 py-1 rounded border bg-transparent outline-none focus:brightness-110"
-            style="color: var(--text-primary); border-color: var(--border-subtle); caret-color: var(--agent-knowledge)"
+            class="col-span-2 border bg-transparent px-2 py-1.5 text-[10px] outline-none"
+            style="border-color: var(--border-subtle)"
+            placeholder="搜索 trace / session ID"
           />
-          <div class="flex gap-1">
-            <select
-              v-model="filterAgent"
-              class="flex-1 text-[10px] px-1.5 py-0.5 rounded border bg-transparent outline-none"
-              style="color: var(--text-muted); border-color: var(--border-subtle)"
-            >
-              <option value="">All Agents</option>
-              <option v-for="a in uniqueAgents" :key="a" :value="a">{{ a }}</option>
-            </select>
-            <select
-              v-model="filterStatus"
-              class="flex-1 text-[10px] px-1.5 py-0.5 rounded border bg-transparent outline-none"
-              style="color: var(--text-muted); border-color: var(--border-subtle)"
-            >
-              <option value="">All Status</option>
-              <option value="ok">OK</option>
-              <option value="error">Error</option>
-            </select>
-          </div>
+          <select v-model="filterAgent" class="border bg-transparent px-1.5 py-1 text-[10px]" style="border-color: var(--border-subtle)">
+            <option value="">全部 Agent</option>
+            <option v-for="agent in uniqueAgents" :key="agent" :value="agent">{{ agent }}</option>
+          </select>
+          <select v-model="filterStatus" class="border bg-transparent px-1.5 py-1 text-[10px]" style="border-color: var(--border-subtle)">
+            <option value="">全部可信状态</option>
+            <option value="verified">已校验</option>
+            <option value="degraded">有错误</option>
+            <option value="partial">证据不完整</option>
+            <option value="compromised">校验失败</option>
+          </select>
         </div>
 
-        <!-- Trace List -->
         <div class="flex-1 overflow-y-auto">
-          <div v-if="listLoading" class="p-4 text-center">
-            <span class="text-[11px]" style="color: var(--text-muted)">Loading traces…</span>
-          </div>
-          <div v-else-if="filteredTraces.length === 0" class="p-6 text-center">
-            <span class="text-[11px]" style="color: var(--text-tertiary)">No traces found</span>
-          </div>
+          <div v-if="listLoading" class="p-5 text-center text-[11px]" style="color: var(--text-muted)">正在加载…</div>
+          <div v-else-if="!filteredTraces.length" class="p-5 text-center text-[11px]" style="color: var(--text-muted)">没有匹配的 Trace</div>
           <button
-            v-for="t in filteredTraces"
-            :key="t.trace_id"
-            class="w-full text-left px-3 py-2 border-b transition-all hover:brightness-110"
+            v-for="trace in filteredTraces"
+            :key="trace.trace_id"
+            class="w-full border-b px-3 py-2.5 text-left transition-colors"
             :style="{
               borderColor: 'var(--border-subtle)',
-              background: selectedTrace?.trace_id === t.trace_id ? 'rgba(124,156,255,0.06)' : 'transparent',
+              background: selectedTrace?.trace_id === trace.trace_id ? 'rgba(124,156,255,0.06)' : 'transparent',
             }"
-            @click="selectTrace(t.trace_id)"
+            @click="selectTrace(trace.trace_id)"
           >
-            <div class="flex items-center gap-1.5 mb-0.5">
-              <span
-                class="w-1.5 h-1.5 rounded-full shrink-0"
-                :style="{ background: t.status === 'error' ? 'var(--agent-review)' : 'var(--agent-knowledge)' }"
-              />
-              <span class="text-[10px] font-mono truncate" style="color: var(--text-secondary)">{{ t.trace_id.slice(0, 8) }}…</span>
-              <span
-                class="text-[9px] px-1 rounded-full shrink-0 ml-auto"
-                :class="t.status === 'error' ? 'badge-err' : 'badge-ok'"
-              >{{ t.status === 'error' ? 'err' : 'ok' }}</span>
+            <div class="flex items-center gap-2">
+              <span class="h-2 w-2 shrink-0 rounded-full" :class="trustClass(trace.status)" />
+              <code class="truncate text-[10px]" style="color: var(--text-secondary)">{{ trace.trace_id.slice(0, 12) }}</code>
+              <span class="ml-auto px-1.5 py-0.5 text-[9px]" :class="trustClass(trace.status)">
+                {{ trace.trust_score }}
+              </span>
             </div>
-            <div class="flex items-center gap-2 text-[9px]" style="color: var(--text-muted)">
-              <span>{{ t.agents.join(", ") || "—" }}</span>
-              <span>{{ t.call_count }} calls</span>
-              <span>{{ formatLatency(t.latency_ms) }}</span>
-              <span>{{ formatCost(t.cost_usd) }}</span>
+            <div class="mt-1 flex gap-2 text-[9px]" style="color: var(--text-muted)">
+              <span>{{ trace.agents.join(" → ") || "无 Agent" }}</span>
+              <span>{{ trace.event_count }} events</span>
             </div>
-            <div class="text-[9px] mt-0.5" style="color: var(--text-tertiary)">{{ formatTime(t.started_at) }}</div>
+            <div class="mt-1 flex gap-2 text-[9px]" style="color: var(--text-tertiary)">
+              <span>{{ trace.call_count }} LLM</span>
+              <span>{{ trace.tool_count }} tools</span>
+              <span>{{ formatCost(trace.cost_usd) }}</span>
+              <span class="ml-auto">{{ formatTraceTime(trace.started_at) }}</span>
+            </div>
           </button>
         </div>
-      </div>
+      </aside>
 
-      <!-- Right: Trace Detail -->
-      <div class="flex-1 flex flex-col min-h-0 min-w-0">
-        <!-- Empty state -->
-        <div v-if="!selectedTrace && !traceLoading" class="flex-1 flex items-center justify-center">
-          <span class="text-xs" style="color: var(--text-tertiary)">Select a trace to view details</span>
+      <main class="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div v-if="!selectedTrace && !traceLoading" class="flex flex-1 items-center justify-center text-xs" style="color: var(--text-tertiary)">
+          选择一条 Trace 查看链路证据
+        </div>
+        <div v-else-if="traceLoading" class="flex flex-1 items-center justify-center text-xs" style="color: var(--text-muted)">
+          正在校验事件账本…
         </div>
 
-        <!-- Loading -->
-        <div v-else-if="traceLoading" class="flex-1 flex items-center justify-center">
-          <span class="text-xs" style="color: var(--text-muted)">Loading trace detail…</span>
-        </div>
-
-        <!-- Trace Detail -->
         <template v-else-if="selectedTrace">
-          <!-- Summary Bar -->
-          <div class="px-4 py-2.5 border-b shrink-0 flex items-center gap-3 flex-wrap" style="border-color: var(--border-subtle)">
-            <span class="text-[10px] font-mono" style="color: var(--text-secondary)">{{ selectedTrace.trace_id }}</span>
-            <span
-              class="text-[9px] px-1.5 py-0.5 rounded-full"
-              :class="verdictBadgeClass(selectedTrace.summary.verdict)"
-            >{{ verdictLabel(selectedTrace.summary.verdict) }}</span>
-            <span class="text-[9px]" style="color: var(--text-muted)">{{ selectedTrace.summary.agent_count }} agents</span>
-            <span class="text-[9px]" style="color: var(--text-muted)">{{ selectedTrace.summary.call_count }} calls</span>
-            <span class="text-[9px]" style="color: var(--text-muted)">{{ formatLatency(selectedTrace.summary.total_latency_ms) }}</span>
-            <span class="text-[9px]" style="color: var(--text-muted)">{{ formatCost(selectedTrace.summary.total_cost_usd) }}</span>
-            <span class="text-[9px]" style="color: var(--text-muted)">{{ selectedTrace.summary.total_tokens.toLocaleString() }} tokens</span>
-          </div>
-
-          <!-- Timeline Content -->
-          <div class="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-            <!-- User Input -->
-            <div v-if="selectedTrace.user_input" class="mb-4">
-              <div class="text-[9px] font-semibold uppercase tracking-wider mb-1" style="color: var(--text-tertiary)">User Input</div>
-              <div class="text-xs rounded-lg px-3 py-2" style="background: rgba(255,255,255,0.02); color: var(--text-primary); white-space: pre-wrap;">
-                {{ selectedTrace.user_input.content }}
-              </div>
+          <section class="shrink-0 border-b" style="border-color: var(--border-subtle)">
+            <div class="flex flex-wrap items-center gap-3 px-4 py-2">
+              <code class="text-[10px]" style="color: var(--text-secondary)">{{ selectedTrace.trace_id }}</code>
+              <span class="px-1.5 py-0.5 text-[9px]" :class="trustClass(selectedTrace.trust.status)">
+                {{ trustLabel(selectedTrace.trust.status) }} · {{ selectedTrace.trust.score }}
+              </span>
+              <span class="text-[9px]" style="color: var(--text-muted)">{{ selectedTrace.scope }}</span>
+              <span class="ml-auto text-[9px]" style="color: var(--text-muted)">
+                {{ selectedTrace.summary.verdict }}
+              </span>
             </div>
 
-            <!-- Agent Timelines -->
-            <div v-for="agent in selectedTrace.agents" :key="agent.agent_id" class="mb-4">
-              <div class="flex items-center gap-2 mb-2">
-                <span class="text-[10px] font-semibold uppercase tracking-wider" style="color: var(--text-secondary)">{{ agent.agent_id }}</span>
-                <span class="text-[9px] px-1 py-0.5 rounded-full" style="background: rgba(255,255,255,0.04); color: var(--text-muted)">{{ agent.call_count }} calls</span>
+            <div class="grid grid-cols-2 border-t sm:grid-cols-4 lg:grid-cols-7" style="border-color: var(--border-subtle)">
+              <div class="metric"><span>事件</span><strong>{{ selectedTrace.events.length }}</strong></div>
+              <div class="metric"><span>Agent</span><strong>{{ selectedTrace.summary.agent_count }}</strong></div>
+              <div class="metric"><span>LLM</span><strong>{{ selectedTrace.summary.call_count }}</strong></div>
+              <div class="metric"><span>工具</span><strong>{{ selectedTrace.summary.tool_count }}</strong></div>
+              <div class="metric"><span>检索</span><strong>{{ selectedTrace.summary.retrieval_count }}</strong></div>
+              <div class="metric"><span>Token</span><strong>{{ selectedTrace.summary.total_tokens.toLocaleString() }}</strong></div>
+              <div class="metric"><span>成本</span><strong>{{ formatCost(selectedTrace.summary.total_cost_usd) }}</strong></div>
+            </div>
+
+            <div class="grid grid-cols-1 border-t text-[10px] sm:grid-cols-2 lg:grid-cols-6" style="border-color: var(--border-subtle)">
+              <div class="audit-line">
+                <span>账本哈希</span>
+                <strong :class="selectedTrace.trust.ledger.valid ? 'text-ok' : 'text-bad'">
+                  {{ selectedTrace.trust.ledger.valid ? "连续" : "失败" }}
+                </strong>
+              </div>
+              <div class="audit-line">
+                <span>必要事件</span>
+                <strong :class="selectedTrace.trust.missing_required_events.length ? 'text-warn' : 'text-ok'">
+                  {{ selectedTrace.trust.missing_required_events.length ? `缺 ${selectedTrace.trust.missing_required_events.length}` : "完整" }}
+                </strong>
+              </div>
+              <div class="audit-line">
+                <span>未闭合工具</span>
+                <strong :class="selectedTrace.trust.open_tool_calls.length ? 'text-bad' : 'text-ok'">
+                  {{ selectedTrace.trust.open_tool_calls.length }}
+                </strong>
+              </div>
+              <div class="audit-line">
+                <span>可验证引用</span>
+                <strong>{{ selectedTrace.trust.verified_citation_count }} / {{ selectedTrace.trust.retrieved_note_count }}</strong>
+              </div>
+              <div class="audit-line">
+                <span>警告</span>
+                <strong :class="selectedTrace.trust.warning_count ? 'text-warn' : ''">{{ selectedTrace.trust.warning_count }}</strong>
+              </div>
+              <div class="audit-line">
+                <span>错误</span>
+                <strong :class="selectedTrace.trust.error_count ? 'text-bad' : 'text-ok'">{{ selectedTrace.trust.error_count }}</strong>
+              </div>
+            </div>
+          </section>
+
+          <nav class="flex shrink-0 gap-1 border-b px-4 py-1.5" style="border-color: var(--border-subtle)">
+            <button
+              v-for="tab in detailTabs"
+              :key="tab"
+              class="px-2 py-1 text-[10px]"
+              :style="{
+                color: activeTab === tab ? 'var(--text-primary)' : 'var(--text-muted)',
+                background: activeTab === tab ? 'rgba(255,255,255,0.06)' : 'transparent',
+              }"
+              @click="activeTab = tab"
+            >
+              {{ tab === "timeline" ? "事件时间线" : tab === "evidence" ? "证据与诊断" : "原始事件" }}
+            </button>
+          </nav>
+
+          <div class="flex-1 overflow-y-auto">
+            <section v-if="activeTab === 'timeline'">
+              <div v-if="selectedTrace.user_input" class="border-b px-4 py-3" style="border-color: var(--border-subtle)">
+                <div class="mb-1 flex items-center gap-2 text-[9px]" style="color: var(--text-muted)">
+                  <span>用户输入</span>
+                  <code>SHA {{ selectedTrace.user_input.sha256?.slice(0, 12) }}</code>
+                  <span v-if="selectedTrace.user_input.truncated">预览已截断</span>
+                </div>
+                <p class="whitespace-pre-wrap text-xs">{{ selectedTrace.user_input.content }}</p>
               </div>
 
-              <!-- Timeline events -->
-              <div class="relative pl-4 border-l" style="border-color: var(--border-subtle)">
-                <div v-for="(event, ei) in agent.timeline" :key="ei" class="relative pb-2">
-                  <!-- Dot -->
-                  <div
-                    class="absolute -left-[5px] w-2 h-2 rounded-full shrink-0"
-                    :style="{
-                      top: '3px',
-                      background: event.type === 'agent_start' ? 'var(--agent-knowledge)' :
-                                  event.type === 'agent_end' ? 'var(--text-muted)' :
-                                  event.status === 'error' ? 'var(--agent-review)' : 'var(--text-tertiary)',
-                      border: '2px solid var(--bg-app)',
-                    }"
-                  />
+              <div
+                v-for="event in selectedTrace.events"
+                :key="event.id"
+                class="grid grid-cols-[42px_10px_minmax(0,1fr)] gap-3 border-b px-4 py-2.5"
+                style="border-color: var(--border-subtle)"
+              >
+                <span class="text-right font-mono text-[9px]" style="color: var(--text-tertiary)">#{{ event.sequence }}</span>
+                <span class="mt-1 h-2 w-2 rounded-full" :class="eventClass(event)" />
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <strong class="text-[10px]">{{ eventLabel(event.event_type) }}</strong>
+                    <span v-if="event.agent_id" class="text-[9px]" style="color: var(--text-muted)">{{ event.agent_id }}</span>
+                    <code v-if="event.phase_trace_id" class="text-[9px]" style="color: var(--text-tertiary)">{{ event.phase_trace_id.slice(0, 8) }}</code>
+                    <span class="ml-auto text-[9px]" style="color: var(--text-tertiary)">{{ formatTraceTime(event.created_at) }}</span>
+                  </div>
+                  <p class="mt-0.5 truncate text-[10px]" style="color: var(--text-secondary)">{{ eventSummary(event) }}</p>
+                </div>
+              </div>
+            </section>
 
-                  <!-- Event content -->
-                  <div class="text-[10px]">
-                    <span
-                      v-if="event.type === 'agent_start'"
-                      class="font-medium"
-                      style="color: var(--agent-knowledge)"
-                    >Agent Start: {{ event.agent_id }}</span>
-                    <span
-                      v-else-if="event.type === 'agent_end'"
-                      style="color: var(--text-muted)"
-                    >Agent End: {{ event.agent_id }}</span>
-                    <div v-else-if="event.type === 'llm_call'" class="flex items-center gap-2 flex-wrap">
-                      <span style="color: var(--text-secondary)">{{ event.model }}</span>
-                      <span style="color: var(--text-muted)">{{ event.input_tokens }}+{{ event.output_tokens }} tok</span>
-                      <span style="color: var(--text-muted)">{{ formatLatency(event.latency_ms || 0) }}</span>
-                      <span style="color: var(--text-muted)">{{ formatCost(event.cost_usd || 0) }}</span>
-                      <span
-                        v-if="event.status === 'error'"
-                        class="text-[9px] px-1 rounded-full badge-err"
-                      >error</span>
-                    </div>
-                    <span class="text-[9px] ml-1" style="color: var(--text-tertiary)">{{ formatTime(event.timestamp) }}</span>
+            <section v-else-if="activeTab === 'evidence'" class="divide-y" style="border-color: var(--border-subtle)">
+              <div class="px-4 py-3">
+                <h2 class="text-[10px] font-semibold">可信声明</h2>
+                <p class="mt-1 text-[10px]" style="color: var(--text-muted)">{{ selectedTrace.trust.claim }}</p>
+                <code class="mt-1 block break-all text-[9px]" style="color: var(--text-tertiary)">
+                  head {{ selectedTrace.trust.ledger.head_hash || "unavailable" }}
+                </code>
+              </div>
+
+              <div v-if="selectedTrace.trust.missing_required_events.length" class="px-4 py-3">
+                <h2 class="text-[10px] font-semibold text-warn">缺失必要事件</h2>
+                <p class="mt-1 text-[10px]" style="color: var(--text-muted)">
+                  {{ selectedTrace.trust.missing_required_events.join(", ") }}
+                </p>
+              </div>
+
+              <div v-if="selectedTrace.trust.structural_issues.length" class="px-4 py-3">
+                <h2 class="text-[10px] font-semibold text-bad">链路结构异常</h2>
+                <p class="mt-1 text-[10px]" style="color: var(--text-muted)">
+                  {{ selectedTrace.trust.structural_issues.join(", ") }}
+                </p>
+              </div>
+
+              <div v-if="selectedTrace.trust.open_tool_calls.length" class="px-4 py-3">
+                <h2 class="text-[10px] font-semibold text-bad">未闭合工具调用</h2>
+                <div v-for="tool in selectedTrace.trust.open_tool_calls" :key="tool.tool_call_id" class="mt-1 text-[10px]">
+                  {{ tool.agent_id }} · {{ tool.name }} · <code>{{ tool.tool_call_id }}</code>
+                </div>
+              </div>
+
+              <div class="px-4 py-3">
+                <h2 class="text-[10px] font-semibold">检索证据（{{ selectedTrace.evidence.retrievals.length }}）</h2>
+                <div v-if="!selectedTrace.evidence.retrievals.length" class="mt-2 text-[10px]" style="color: var(--text-muted)">本链路没有检索事件</div>
+                <div v-for="retrieval in selectedTrace.evidence.retrievals" :key="retrieval.id" class="mt-2 border-t pt-2" style="border-color: var(--border-subtle)">
+                  <div class="flex gap-2 text-[10px]">
+                    <span>{{ retrieval.agent_id }}</span>
+                    <span style="color: var(--text-muted)">{{ eventSummary(retrieval) }}</span>
+                    <code class="ml-auto text-[9px]">query {{ String(retrieval.payload.query_sha256 || "").slice(0, 10) }}</code>
+                  </div>
+                  <div
+                    v-for="note in retrieval.payload.selected || []"
+                    :key="note.note_id"
+                    class="mt-1 grid grid-cols-[minmax(0,1fr)_repeat(3,52px)] gap-2 text-[9px]"
+                    style="color: var(--text-muted)"
+                  >
+                    <span class="truncate">{{ note.title || note.note_id }}</span>
+                    <span>final {{ note.ranker?.final_score ?? "—" }}</span>
+                    <span>sem {{ note.ranker?.semantic_score ?? "—" }}</span>
+                    <span>graph {{ note.ranker?.graph_score ?? "—" }}</span>
                   </div>
                 </div>
               </div>
-            </div>
 
-            <!-- Errors -->
-            <div v-if="selectedTrace.errors.length > 0">
-              <div class="text-[9px] font-semibold uppercase tracking-wider mb-1" style="color: var(--agent-review)">Errors ({{ selectedTrace.errors.length }})</div>
-              <div
-                v-for="err in selectedTrace.errors"
-                :key="err.id"
-                class="text-[10px] rounded px-2.5 py-1.5 mb-1"
-                style="background: rgba(239,68,68,0.06); color: var(--text-secondary); border: 1px solid rgba(239,68,68,0.1)"
-              >
-                <span class="font-medium" style="color: var(--agent-review)">{{ err.error_type }}</span>
-                <span class="ml-2" style="color: var(--text-muted)">{{ err.error_msg }}</span>
+              <div class="px-4 py-3">
+                <h2 class="text-[10px] font-semibold">可验证引用（{{ selectedTrace.evidence.citations.length }}）</h2>
+                <p v-if="!selectedTrace.evidence.citations.length" class="mt-1 text-[10px]" style="color: var(--text-muted)">
+                  没有检测到最终输出中的精确 note_id，不能声称引用已验证。
+                </p>
+                <div v-for="citation in selectedTrace.evidence.citations" :key="`${citation.sequence}-${citation.note_id}`" class="mt-1 text-[10px]">
+                  {{ citation.agent_id }} · <code>{{ citation.note_id }}</code> · {{ citation.verification }}
+                </div>
               </div>
-            </div>
+            </section>
+
+            <section v-else>
+              <details v-for="event in selectedTrace.events" :key="event.id" class="border-b px-4 py-2" style="border-color: var(--border-subtle)">
+                <summary class="cursor-pointer text-[10px]">
+                  #{{ event.sequence }} {{ event.event_type }} · {{ event.agent_id || "system" }}
+                </summary>
+                <pre class="mt-2 overflow-x-auto whitespace-pre-wrap break-all text-[9px]" style="color: var(--text-muted)">{{ prettyPayload(event) }}</pre>
+                <div class="mt-2 break-all font-mono text-[8px]" style="color: var(--text-tertiary)">
+                  prev {{ event.prev_hash || "—" }}<br />
+                  hash {{ event.event_hash || "—" }}
+                </div>
+              </details>
+            </section>
           </div>
         </template>
-      </div>
+      </main>
     </div>
   </div>
 </template>
 
 <style scoped>
-.badge-ok {
-  background: rgba(34,197,94,0.1);
-  color: var(--agent-knowledge);
+.metric {
+  min-width: 0;
+  border-right: 1px solid var(--border-subtle);
+  padding: 8px 12px;
 }
-.badge-err {
-  background: rgba(239,68,68,0.1);
-  color: var(--agent-review);
+.metric span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 9px;
 }
-.badge-neutral {
-  background: rgba(255,255,255,0.05);
+.metric strong {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+.audit-line {
+  display: flex;
+  justify-content: space-between;
+  border-right: 1px solid var(--border-subtle);
+  padding: 7px 12px;
   color: var(--text-muted);
 }
+.audit-line strong { color: var(--text-secondary); }
+.trust-ok, .event-accent {
+  background: rgba(34,197,94,0.12);
+  color: #66d28b;
+}
+.trust-warn, .event-warn {
+  background: rgba(245,158,11,0.12);
+  color: #f5b942;
+}
+.trust-partial {
+  background: rgba(148,163,184,0.12);
+  color: #aab4c3;
+}
+.trust-bad, .event-bad {
+  background: rgba(239,68,68,0.12);
+  color: #f27b7b;
+}
+.event-neutral {
+  background: rgba(148,163,184,0.22);
+}
+.text-ok { color: #66d28b !important; }
+.text-warn { color: #f5b942 !important; }
+.text-bad { color: #f27b7b !important; }
 </style>

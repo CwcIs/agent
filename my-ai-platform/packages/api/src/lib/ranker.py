@@ -36,12 +36,28 @@ W_RECENCY = 0.10
 def record_event(conn: sqlite3.Connection, note_id: str, event_type: str,
                  session_id: str = "", source: str = "") -> None:
     """记录一次检索反馈事件，同时更新 note_stats 聚合。"""
+    try:
+        from src.lib.trace import get_trace_context
+    except ModuleNotFoundError:  # direct playground/test import as `lib.ranker`
+        from lib.trace import get_trace_context
+
+    trace_context = get_trace_context()
+    effective_session_id = session_id or trace_context.session_id
     eid = str(uuid.uuid4())
     try:
         conn.execute(
-            """INSERT INTO retrieval_events (id, note_id, session_id, event_type, source)
-               VALUES (?, ?, ?, ?, ?)""",
-            (eid, note_id, session_id, event_type, source),
+            """INSERT INTO retrieval_events
+               (id, note_id, session_id, event_type, source, trace_id, phase_trace_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                eid,
+                note_id,
+                effective_session_id,
+                event_type,
+                source,
+                trace_context.trace_id,
+                trace_context.phase_trace_id,
+            ),
         )
         conn.commit()
     except Exception:
@@ -70,7 +86,6 @@ def _upsert_note_stat(conn: sqlite3.Connection, note_id: str, event_type: str) -
         conn.execute(
             """UPDATE note_stats SET
                  success_count = success_count + 1,
-                 exposure_count = exposure_count + 1,
                  last_accessed_at = ?,
                  last_reinforced_at = ?,
                  updated_at = ?

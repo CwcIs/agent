@@ -21,8 +21,10 @@ import uuid
 from typing import AsyncGenerator
 
 from src.agent.registry import get_agent
+from src.agent.trace_events import record_agent_output_trace, record_tool_trace
 from src.agent.worklist import mark_done as wl_mark_done, mark_failed as wl_mark_failed
 from src.context.assemble import package_handoff, agent_display_name
+from src.lib.trace import record_trace_event, set_trace_context
 
 
 def _save_message(conn: sqlite3.Connection, session_id: str, agent_id: str, role: str, content: str) -> None:
@@ -43,9 +45,10 @@ async def _run_one_agent(
     event_queue: asyncio.Queue,
     conn: sqlite3.Connection | None = None,
     work_id: str = "",
-    prompt_version: str = "v1",
+    prompt_version: str = "v2",
     agent_a_id: str = "",
     trace_id: str = "",
+    root_trace_id: str = "",
 ) -> None:
     """
     在独立 task 中运行一个 Agent，把事件推入共享队列。
@@ -82,14 +85,47 @@ async def _run_one_agent(
             "recursion_limit": 10,
         }
 
-        agent.set_runtime_context(session_id, prompt_version, trace_id)
+        set_trace_context(
+            root_trace_id,
+            phase_trace_id=trace_id,
+            session_id=session_id,
+            agent_id=agent_id,
+        )
+        record_trace_event(
+            conn,
+            "agent_start",
+            trace_id=root_trace_id,
+            phase_trace_id=trace_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            parent_agent_id=agent_a_id,
+            payload={"mode": "parallel", "message_count": len(messages), "work_id": work_id},
+        )
+        agent.set_runtime_context(
+            session_id,
+            prompt_version,
+            trace_id,
+            root_trace_id=root_trace_id,
+        )
 
         full_text = ""
+        completed_tool_count = 0
         async for event in agent.astream(messages, config):
             if event.get("type") == "done":
                 continue  # 抑制个体 done，由 orchestrator 统一下发
             if event.get("type") == "token":
                 full_text += event.get("delta", "")
+            elif event.get("type") in ("tool_start", "tool_end"):
+                if event.get("type") == "tool_end":
+                    completed_tool_count += 1
+                record_tool_trace(
+                    conn,
+                    root_trace_id=root_trace_id,
+                    phase_trace_id=trace_id,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    event=event,
+                )
             await event_queue.put(event)
 
         # 持久化 assistant 回复 + 标记 worklist done
@@ -98,9 +134,33 @@ async def _run_one_agent(
         if conn and work_id:
             wl_mark_done(conn, work_id)
 
+        record_agent_output_trace(
+            conn,
+            root_trace_id=root_trace_id,
+            phase_trace_id=trace_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            parent_agent_id=agent_a_id,
+            full_text=full_text,
+            tool_call_count=completed_tool_count,
+            mode="parallel",
+        )
+
     except Exception as exc:
         if conn and work_id:
             wl_mark_failed(conn, work_id, str(exc))
+        record_trace_event(
+            conn,
+            "error",
+            trace_id=root_trace_id,
+            phase_trace_id=trace_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            parent_agent_id=agent_a_id,
+            status="error",
+            name="parallel_agent",
+            payload={"message": str(exc)},
+        )
         await event_queue.put({
             "type": "error",
             "agentId": agent_id,
@@ -118,9 +178,10 @@ async def orchestrate_parallel(
     session_id: str,
     conn: sqlite3.Connection | None = None,
     worklist_ids: list[str] | None = None,
-    prompt_version: str = "v1",
+    prompt_version: str = "v2",
     agent_a_id: str = "",
     trace_ids: list[str] | None = None,
+    root_trace_id: str = "",
 ) -> AsyncGenerator[dict, None]:
     """
     并行 fan-out：把多个 mention 目标 Agent 同时跑起来，interleave 输出。
@@ -167,6 +228,7 @@ async def orchestrate_parallel(
                 prompt_version=prompt_version,
                 agent_a_id=agent_a_id,
                 trace_id=btids[i],
+                root_trace_id=root_trace_id,
             )
         )
         for i, (agent_id, content) in enumerate(mentions)

@@ -16,6 +16,7 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",
     "sse-starlette>=2.0.0",
+    "python-multipart>=0.0.9",
     "sqlite-vec>=0.1.0",
 ]
 

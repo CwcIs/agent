@@ -92,7 +92,7 @@ class AgentChunk(BaseModel):
 # sessionId 是 trace key，Phase 2 加 OpenTelemetry 时直接当 trace_id 用
 class RequestContext(BaseModel):
     session_id: str
-    prompt_version: str = "v1"                 # 从第一天就传，改 prompt 能回溯
+    prompt_version: str = "v2"                 # v2 强制可验证 note_id 引用
     user_id: Optional[str] = None
     platform: Literal["web", "telegram"] = "web"
 

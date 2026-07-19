@@ -6,6 +6,13 @@ import {
   formatMs,
 } from "../chat/model";
 import type { TraceData } from "../composables/useChatTrace";
+import { trustLabel } from "../trace/model";
+
+function trustClass(status: string): string {
+  if (status === "verified") return "ok";
+  if (status === "compromised") return "bad";
+  return "warn";
+}
 
 defineProps<{
   traceId: string;
@@ -36,9 +43,11 @@ defineEmits<{
 
         <template v-if="traceData">
           <span class="dot-sep">·</span>
-          <span>{{ traceData.summary.call_count }} calls</span>
+          <span :class="trustClass(traceData.trust.status)">
+            {{ trustLabel(traceData.trust.status) }} {{ traceData.trust.score }}
+          </span>
           <span class="dot-sep">·</span>
-          <span>{{ traceData.summary.total_tokens.toLocaleString() }} tokens</span>
+          <span>{{ traceData.events.length }} events</span>
           <span class="dot-sep">·</span>
           <span>{{ formatCost(traceData.summary.total_cost_usd) }}</span>
           <span class="dot-sep">·</span>
@@ -55,8 +64,11 @@ defineEmits<{
       </div>
 
       <div v-if="traceExpanded && traceData" class="trace-detail-panel">
-        <div v-if="traceData.summary.call_count === 0" class="trace-empty">
-          No LLM calls were recorded for this trace id. Check provider/API-key errors, or whether this response came from cached/local logic.
+        <div v-if="traceData.trust.status !== 'verified'" class="trace-empty">
+          {{ traceData.trust.claim }}
+          <span v-if="traceData.trust.missing_required_events.length">
+            · 缺少 {{ traceData.trust.missing_required_events.join(", ") }}
+          </span>
         </div>
 
         <div v-for="agent in traceData.agents" :key="agent.agent_id" class="trace-agent-group">
@@ -64,19 +76,17 @@ defineEmits<{
             <span class="trace-agent-badge" :style="{ background: AGENT_TRACE_BG[agent.agent_id] || 'rgba(255,255,255,0.06)', color: AGENT_TRACE_COLOR[agent.agent_id] || '#9AA4B2' }">
               {{ agent.agent_id }}
             </span>
-            <span>{{ agent.subtotal.tokens.toLocaleString() }} tokens</span>
-            <span>{{ formatCost(agent.subtotal.cost_usd) }}</span>
-            <span class="trace-agent-latency">{{ formatMs(agent.subtotal.latency_ms) }}</span>
+            <span>{{ agent.call_count }} LLM</span>
+            <span>{{ agent.phase_trace_ids.length }} phases</span>
           </div>
+        </div>
 
-          <div v-for="(call, callIndex) in agent.calls" :key="callIndex" class="trace-call-row">
-            <span class="model">{{ call.model }}</span>
-            <span>in:{{ call.input_tokens }}</span>
-            <span>out:{{ call.output_tokens }}</span>
-            <span>{{ formatCost(call.cost_usd) }}</span>
-            <span class="trace-agent-latency">{{ formatMs(call.latency_ms) }}</span>
-            <span :class="call.status === 'ok' ? 'ok' : 'bad'">{{ call.status }}</span>
-          </div>
+        <div class="trace-agent-row trace-totals">
+          <span>{{ traceData.summary.call_count }} LLM</span>
+          <span>{{ traceData.summary.tool_count }} tools</span>
+          <span>{{ traceData.summary.retrieval_count }} retrievals</span>
+          <span>{{ traceData.trust.verified_citation_count }} verified citations</span>
+          <span class="trace-agent-latency">{{ traceData.summary.total_tokens.toLocaleString() }} tokens</span>
         </div>
       </div>
     </div>
@@ -209,7 +219,13 @@ defineEmits<{
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.trace-totals {
+  margin-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
 .ok { color: var(--color-success); }
+.warn { color: #f5b942; }
 .bad { color: var(--color-danger); }
 </style>
-

@@ -28,6 +28,7 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
         只返回 status='live' 的笔记。
         """
         from src.lib.ranker import rank_candidates, record_event
+        from src.lib.trace import content_fingerprint, record_trace_event
 
         k = min(k, 10)
         candidates: list[dict] = []
@@ -86,6 +87,19 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
             pass
 
         if not candidates:
+            record_trace_event(
+                conn,
+                "retrieval_completed",
+                status="empty",
+                name="search_notes",
+                payload={
+                    "query_preview": query[:200],
+                    "query_sha256": content_fingerprint(query),
+                    "requested_k": k,
+                    "candidate_count": 0,
+                    "selected": [],
+                },
+            )
             return json.dumps([], ensure_ascii=False)
 
         # 统一排序
@@ -98,6 +112,26 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
                 record_event(conn, c["id"], "shown", source="search")
             except Exception:
                 pass
+
+        record_trace_event(
+            conn,
+            "retrieval_completed",
+            name="search_notes",
+            payload={
+                "query_preview": query[:200],
+                "query_sha256": content_fingerprint(query),
+                "requested_k": k,
+                "candidate_count": len(candidates),
+                "selected": [
+                    {
+                        "note_id": candidate["id"],
+                        "title": candidate.get("title", ""),
+                        "ranker": candidate.get("_ranker", {}),
+                    }
+                    for candidate in top
+                ],
+            },
+        )
 
         # 格式化输出
         results = []
@@ -356,4 +390,3 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
         }, ensure_ascii=False)
 
     return [search_notes, save_note, get_note, archive_note, get_notes_summary, synthesize_notes]
-

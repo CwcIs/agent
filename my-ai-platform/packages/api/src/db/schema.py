@@ -1,5 +1,5 @@
 # ============================================================
-# SQLite 15 表 Schema（Phase 1-5）
+# SQLite 17 表 Schema（Phase 1-7）
 #
 # 表：
 #   1. notes           — 笔记主表（Phase 5.3: +source_url/source_file/source_type/word_count）
@@ -17,6 +17,8 @@
 #  13. retrieval_events— 检索反馈事件
 #  14. note_stats      — 笔记排序统计
 #  15. source_trace    — 外部来源追踪（Phase 5.3）
+#  16. custom_tools    — 用户自定义 HTTP 工具
+#  17. trace_events    — 全链路、可校验执行事件账本
 # ============================================================
 
 import sqlite3
@@ -254,6 +256,31 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_source_trace_note ON source_trace(note_id);
 
+        -- ⑰ trace_events — 根 trace 下的全链路事件账本
+        CREATE TABLE IF NOT EXISTS trace_events (
+            id              TEXT PRIMARY KEY,
+            trace_id        TEXT NOT NULL,
+            phase_trace_id  TEXT NOT NULL DEFAULT '',
+            session_id      TEXT NOT NULL DEFAULT '',
+            sequence        INTEGER NOT NULL,
+            event_type      TEXT NOT NULL,
+            agent_id        TEXT NOT NULL DEFAULT '',
+            parent_agent_id TEXT NOT NULL DEFAULT '',
+            status          TEXT NOT NULL DEFAULT 'ok',
+            name            TEXT NOT NULL DEFAULT '',
+            payload_json    TEXT NOT NULL DEFAULT '{}',
+            prev_hash       TEXT NOT NULL DEFAULT '',
+            event_hash      TEXT NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now','localtime')),
+            UNIQUE(trace_id, sequence)
+        );
+        CREATE INDEX IF NOT EXISTS idx_trace_events_root
+            ON trace_events(trace_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_trace_events_phase
+            ON trace_events(phase_trace_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_trace_events_session
+            ON trace_events(session_id, created_at);
+
         -- ⑯ custom_tools — 用户自定义 HTTP 工具（Phase 7.3）
         CREATE TABLE IF NOT EXISTS custom_tools (
             id              TEXT PRIMARY KEY,
@@ -316,6 +343,19 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''")
     except Exception:
         pass  # 列已存在
+
+    # ── 迁移：retrieval_events 关联根 trace 与 Agent phase ──
+    for column in ("trace_id", "phase_trace_id"):
+        try:
+            conn.execute(
+                f"ALTER TABLE retrieval_events ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception:
+            pass
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_retrieval_events_trace "
+        "ON retrieval_events(trace_id, created_at)"
+    )
 
     # ── 迁移（Phase 4A-1）：edges 增加 confidence / source / evidence / status 列 ──
     for col, default, col_type in [

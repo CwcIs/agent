@@ -389,7 +389,7 @@ def _fetch_related_notes(conn: sqlite3.Connection, user_input: str) -> str:
     try:
         rows = conn.execute(
             """
-            SELECT n.title, n.content
+            SELECT n.id, n.title, n.content
             FROM notes_fts f
             JOIN notes n ON n.rowid = f.rowid
             WHERE notes_fts MATCH ?
@@ -404,17 +404,72 @@ def _fetch_related_notes(conn: sqlite3.Connection, user_input: str) -> str:
         return ""
 
     if not rows:
+        try:
+            from src.lib.trace import content_fingerprint, record_trace_event
+        except ModuleNotFoundError:  # direct playground/test import as `context.assemble`
+            import hashlib
+
+            def content_fingerprint(value):
+                return hashlib.sha256(value.encode()).hexdigest()
+
+            def record_trace_event(*args, **kwargs):
+                return None
+
+        record_trace_event(
+            conn,
+            "retrieval_completed",
+            status="empty",
+            name="context_fts",
+            payload={
+                "query_preview": user_input[:200],
+                "query_sha256": content_fingerprint(user_input),
+                "candidate_count": 0,
+                "selected": [],
+            },
+        )
         return ""
+
+    try:
+        from src.lib.ranker import record_event
+        from src.lib.trace import content_fingerprint, record_trace_event
+    except ModuleNotFoundError:  # direct playground/test import as `context.assemble`
+        import hashlib
+
+        def record_event(*args, **kwargs):
+            return None
+
+        def content_fingerprint(value):
+            return hashlib.sha256(value.encode()).hexdigest()
+
+        def record_trace_event(*args, **kwargs):
+            return None
 
     lines = ["## 相关知识库笔记"]
     for r in rows:
-        title = r[0]
-        content = r[1] or ""
+        note_id = r[0]
+        title = r[1]
+        content = r[2] or ""
+        record_event(conn, note_id, "shown", source="context")
         # 截断内容预览
         preview = content[:RELATED_NOTE_PREVIEW_CHARS].replace("\n", " ")
         if len(content) > RELATED_NOTE_PREVIEW_CHARS:
             preview += "…"
-        lines.append(f"- **{title}**: {preview}")
+        lines.append(f"- [note:{note_id}] **{title}**: {preview}")
+
+    record_trace_event(
+        conn,
+        "retrieval_completed",
+        name="context_fts",
+        payload={
+            "query_preview": user_input[:200],
+            "query_sha256": content_fingerprint(user_input),
+            "candidate_count": len(rows),
+            "selected": [
+                {"note_id": row[0], "title": row[1], "ranker": {"source": "fts"}}
+                for row in rows
+            ],
+        },
+    )
 
     return "\n".join(lines)
 
@@ -466,7 +521,12 @@ def assemble_context(
     ).fetchall()
 
     if not rows:
-        return []
+        result: list[BaseMessage] = []
+        if user_input:
+            related_section = _fetch_related_notes(conn, user_input)
+            if related_section:
+                result.append(HumanMessage(content=related_section))
+        return result
 
     # ── 构建消息元数据列表 ──
     all_msgs: list[dict] = []

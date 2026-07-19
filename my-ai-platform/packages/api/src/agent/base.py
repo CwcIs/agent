@@ -34,16 +34,32 @@ class BaseAgent(ABC):
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self._session_id = ""
-        self._prompt_version = "v1"
+        self._prompt_version = "v2"
         self._trace_id = ""
+        self._root_trace_id = ""
         self._tools = self._make_tools()
         self._graph = self._build_graph()
 
-    def set_runtime_context(self, session_id: str, prompt_version: str = "v1", trace_id: str = "") -> None:
+    def set_runtime_context(
+        self,
+        session_id: str,
+        prompt_version: str = "v2",
+        trace_id: str = "",
+        root_trace_id: str = "",
+    ) -> None:
         """设置当前请求的运行时上下文，call_llm 需要这些来记账和预算检查。"""
+        from src.lib.trace import set_trace_context
+
         self._session_id = session_id
         self._prompt_version = prompt_version
         self._trace_id = trace_id
+        self._root_trace_id = root_trace_id or trace_id
+        set_trace_context(
+            self._root_trace_id,
+            phase_trace_id=trace_id,
+            session_id=session_id,
+            agent_id=self.agent_id,
+        )
 
     @abstractmethod
     def _make_tools(self) -> list:
@@ -112,6 +128,7 @@ class BaseAgent(ABC):
                     "type": "tool_start",
                     "agentId": self.agent_id,
                     "name": event["name"],
+                    "tool_call_id": str(event.get("run_id", "")),
                     "input": event["data"].get("input", {}),
                 }
 
@@ -126,11 +143,13 @@ class BaseAgent(ABC):
                         ensure_ascii=False,
                     )
                 else:
-                    result = str(output)[:300]
+                    raw_result = getattr(output, "content", output)
+                    result = str(raw_result)[:4000]
                 yield {
                     "type": "tool_end",
                     "agentId": self.agent_id,
                     "name": event["name"],
+                    "tool_call_id": str(event.get("run_id", "")),
                     "result": result,
                 }
 

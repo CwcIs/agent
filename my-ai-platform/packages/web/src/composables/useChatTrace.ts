@@ -1,28 +1,7 @@
 import { ref } from "vue";
+import type { TraceDetail } from "../trace/model";
 
-export interface TraceCall {
-  id: string;
-  agent_id: string;
-  model: string;
-  input_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
-  latency_ms: number;
-  status: string;
-  created_at: string;
-}
-
-export interface TraceAgent {
-  agent_id: string;
-  calls: TraceCall[];
-  subtotal: { tokens: number; cost_usd: number; latency_ms: number; call_count: number };
-}
-
-export interface TraceData {
-  trace_id: string;
-  agents: TraceAgent[];
-  summary: { total_tokens: number; total_cost_usd: number; total_latency_ms: number; call_count: number };
-}
+export type TraceData = TraceDetail;
 
 export function useChatTrace() {
   const traceId = ref<string | null>(null);
@@ -37,7 +16,7 @@ export function useChatTrace() {
     if (!targetId || traceLoading.value) return;
     traceLoading.value = true;
     try {
-      const response = await fetch(`/trace/${targetId}`);
+      const response = await fetch(`/traces/${targetId}`);
       if (response.ok) traceData.value = await response.json();
     } catch {
       // Trace details are supplementary; chat remains usable when unavailable.
@@ -95,4 +74,3 @@ export function useChatTrace() {
     resetTrace,
   };
 }
-

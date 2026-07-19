@@ -19,6 +19,7 @@ python-dotenv>=1.0.0
 
 # SSE streaming
 sse-starlette>=2.0.0
+python-multipart>=0.0.9
 
 # Vector (Phase 2)
 # sqlite-vec>=0.1.0

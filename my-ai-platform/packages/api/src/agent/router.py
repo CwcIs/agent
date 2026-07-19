@@ -17,6 +17,7 @@ context-transport（Phase 2）：
   MAX_MENTION_TARGETS = 2（单条消息最多 @2 个 Agent）
 """
 
+import asyncio
 import json
 import re
 import sqlite3
@@ -33,8 +34,10 @@ from src.agent.router_parser import (
 )
 from src.agent.verdict import detect_verdict
 from src.agent.orchestrator import orchestrate_parallel
+from src.agent.trace_events import record_agent_output_trace, record_tool_trace
 from src.agent.worklist import save_handoff, mark_done, mark_failed, mark_running, get_pending
 from src.context.assemble import assemble_context, package_handoff, agent_display_name
+from src.lib.trace import content_fingerprint, record_trace_event, set_trace_context
 
 _HISTORY_LIMIT = 20  # 保留兼容；assemble_context 使用 token 预算而非条数
 MAX_A2A_DEPTH = 5
@@ -56,11 +59,11 @@ def _save_message(conn: sqlite3.Connection, session_id: str, agent_id: str, role
     conn.commit()
 
 
-async def route_serial(
+async def _route_serial_impl(
     user_input: str,
     session_id: str,
     conn: sqlite3.Connection | None = None,
-    prompt_version: str = "v1",
+    prompt_version: str = "v2",
     trace_id: str = "",
 ) -> AsyncGenerator[dict, None]:
     """
@@ -72,6 +75,33 @@ async def route_serial(
 
     产出带 agentId 的事件，与 BaseAgent.astream 相同格式。
     """
+    root_trace_id = trace_id or str(uuid.uuid4())
+    set_trace_context(root_trace_id, session_id=session_id, agent_id="router")
+    record_trace_event(
+        conn,
+        "trace_start",
+        trace_id=root_trace_id,
+        session_id=session_id,
+        agent_id="router",
+        payload={
+            "prompt_version": prompt_version,
+            "input_chars": len(user_input),
+        },
+    )
+    record_trace_event(
+        conn,
+        "input_received",
+        trace_id=root_trace_id,
+        session_id=session_id,
+        agent_id="user",
+        payload={
+            "content_preview": user_input[:1000],
+            "content_sha256": content_fingerprint(user_input),
+            "char_count": len(user_input),
+            "truncated": len(user_input) > 1000,
+        },
+    )
+
     # 用户显式 #tag 路由（Clowder 风格）
     tag_agent, cleaned_input = parse_user_tags(user_input)
     start_agent = tag_agent or "knowledge"
@@ -102,6 +132,21 @@ async def route_serial(
             resume_trace_id = str(uuid.uuid4())
             phase_trace_ids[agent_id] = resume_trace_id
             yield {"type": "agent_switch", "agentId": agent_id, "trace_id": resume_trace_id}
+            set_trace_context(
+                root_trace_id,
+                phase_trace_id=resume_trace_id,
+                session_id=session_id,
+                agent_id=agent_id,
+            )
+            record_trace_event(
+                conn,
+                "agent_start",
+                trace_id=root_trace_id,
+                phase_trace_id=resume_trace_id,
+                session_id=session_id,
+                agent_id=agent_id,
+                payload={"mode": "crash_recovery", "work_id": wid},
+            )
 
             # 从 worklist 字段重建 handoff 上下文
             tool_events = json.loads(item["tool_events_json"])
@@ -120,16 +165,47 @@ async def route_serial(
                 "recursion_limit": 10,
             }
 
-            agent.set_runtime_context(session_id, prompt_version, resume_trace_id)
+            agent.set_runtime_context(
+                session_id,
+                prompt_version,
+                resume_trace_id,
+                root_trace_id=root_trace_id,
+            )
 
             resume_text = ""
             try:
                 async for event in agent.astream(handoff_msgs, config):
                     if event["type"] == "token":
                         resume_text += event["delta"]
+                    elif event["type"] in ("tool_start", "tool_end"):
+                        record_trace_event(
+                            conn,
+                            event["type"],
+                            trace_id=root_trace_id,
+                            phase_trace_id=resume_trace_id,
+                            session_id=session_id,
+                            agent_id=agent_id,
+                            name=event.get("name", "unknown"),
+                            payload={
+                                "tool_call_id": event.get("tool_call_id", ""),
+                                "input": event.get("input", {}),
+                                "result": event.get("result", "") if event["type"] == "tool_end" else "",
+                            },
+                        )
                     yield event
             except Exception as exc:
                 mark_failed(conn, wid, str(exc))
+                record_trace_event(
+                    conn,
+                    "error",
+                    trace_id=root_trace_id,
+                    phase_trace_id=resume_trace_id,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    status="error",
+                    name="crash_recovery",
+                    payload={"message": str(exc), "work_id": wid},
+                )
                 yield {
                     "type": "error",
                     "agentId": agent_id,
@@ -141,11 +217,38 @@ async def route_serial(
                 _save_message(conn, session_id, agent_id, "assistant", resume_text)
 
             mark_done(conn, wid)
+            record_trace_event(
+                conn,
+                "agent_end",
+                trace_id=root_trace_id,
+                phase_trace_id=resume_trace_id,
+                session_id=session_id,
+                agent_id=agent_id,
+                payload={
+                    "mode": "crash_recovery",
+                    "work_id": wid,
+                    "output_chars": len(resume_text),
+                    "output_sha256": content_fingerprint(resume_text),
+                },
+            )
 
     # 第一跳：通过 assemble_context 按优先级 + token 预算加载历史
     # 同时注入相关笔记（Context 改造 — Phase 4）
     history = assemble_context(conn, session_id, user_input=cleaned_input) if conn else []
     first_messages = history + [HumanMessage(content=cleaned_input)]
+    record_trace_event(
+        conn,
+        "context_assembled",
+        trace_id=root_trace_id,
+        session_id=session_id,
+        agent_id=start_agent,
+        payload={
+            "history_message_count": len(history),
+            "final_message_count": len(first_messages),
+            "explicit_route": tag_agent or "",
+            "cleaned_input_chars": len(cleaned_input),
+        },
+    )
 
     # 持久化用户消息（在 assemble 之后，避免重复出现在历史中）
     if conn:
@@ -154,14 +257,28 @@ async def route_serial(
     queue: list[tuple[str, list, str | None]] = [(start_agent, first_messages, None)]  # (agent_id, messages, work_id)
     depth = 0
     handoff_history: list = []  # verdict-detect: 记录每次 handoff 防 loop
+    trace_status = "ok"
+    final_verdict = "incomplete"
 
     while queue and depth < MAX_A2A_DEPTH:
         agent_id, messages, work_id = queue.pop(0)
         agent = get_agent(agent_id)
 
         if agent is None:
+            trace_status = "error"
+            final_verdict = "unknown_agent"
             if conn and work_id:
                 mark_failed(conn, work_id, f"Unknown agent: {agent_id}")
+            record_trace_event(
+                conn,
+                "error",
+                trace_id=root_trace_id,
+                session_id=session_id,
+                agent_id=agent_id,
+                status="error",
+                name="unknown_agent",
+                payload={"message": f"Unknown agent: {agent_id}", "depth": depth},
+            )
             yield {
                 "type": "error",
                 "agentId": agent_id,
@@ -176,6 +293,25 @@ async def route_serial(
         # ── Per-phase trace_id：每个 Agent 独立 trace，全局 trace_id 仅用于 session 关联 ──
         phase_trace_id = str(uuid.uuid4())
         phase_trace_ids[agent_id] = phase_trace_id
+        set_trace_context(
+            root_trace_id,
+            phase_trace_id=phase_trace_id,
+            session_id=session_id,
+            agent_id=agent_id,
+        )
+        record_trace_event(
+            conn,
+            "agent_start",
+            trace_id=root_trace_id,
+            phase_trace_id=phase_trace_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            payload={
+                "depth": depth,
+                "message_count": len(messages),
+                "work_id": work_id or "",
+            },
+        )
 
         # 切换 Agent 通知前端（携带本 phase 的 trace_id）
         if depth > 0:
@@ -186,7 +322,12 @@ async def route_serial(
             "recursion_limit": 10,
         }
 
-        agent.set_runtime_context(session_id, prompt_version, phase_trace_id)
+        agent.set_runtime_context(
+            session_id,
+            prompt_version,
+            phase_trace_id,
+            root_trace_id=root_trace_id,
+        )
 
         full_text = ""
         tool_events: list[dict] = []  # 收集工具调用事件，用于后续 context-transport
@@ -205,6 +346,15 @@ async def route_serial(
                         "result": event.get("result"),
                     })
 
+                    record_tool_trace(
+                        conn,
+                        root_trace_id=root_trace_id,
+                        phase_trace_id=phase_trace_id,
+                        session_id=session_id,
+                        agent_id=agent_id,
+                        event=event,
+                    )
+
                     # 工具结果持久化到 DB，让后续请求也能看到历史工具结果
                     if event["type"] == "tool_end" and conn:
                         try:
@@ -218,8 +368,31 @@ async def route_serial(
                 yield event  # 透传给 SSE
 
         except Exception as exc:
+            trace_status = "error"
+            final_verdict = "agent_error"
             if conn and work_id:
                 mark_failed(conn, work_id, str(exc))
+            record_trace_event(
+                conn,
+                "error",
+                trace_id=root_trace_id,
+                phase_trace_id=phase_trace_id,
+                session_id=session_id,
+                agent_id=agent_id,
+                status="error",
+                name="agent_execution",
+                payload={"message": str(exc), "depth": depth},
+            )
+            record_trace_event(
+                conn,
+                "agent_end",
+                trace_id=root_trace_id,
+                phase_trace_id=phase_trace_id,
+                session_id=session_id,
+                agent_id=agent_id,
+                status="error",
+                payload={"depth": depth, "output_chars": len(full_text)},
+            )
             yield {
                 "type": "error",
                 "agentId": agent_id,
@@ -231,6 +404,19 @@ async def route_serial(
         # 持久化 assistant 回复
         if conn and full_text:
             _save_message(conn, session_id, agent_id, "assistant", full_text)
+
+        record_agent_output_trace(
+            conn,
+            root_trace_id=root_trace_id,
+            phase_trace_id=phase_trace_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            full_text=full_text,
+            tool_call_count=sum(
+                1 for event in tool_events if event["type"] == "tool_end"
+            ),
+            depth=depth,
+        )
 
         # ── WorklistRegistry: 标记当前任务完成 ──
         if conn and work_id:
@@ -244,6 +430,20 @@ async def route_serial(
         # ── a2a-shadow-detection：行内 @mention 扫描 ──
         shadows = detect_shadow_mentions(full_text, agent_id, agent_ids)
         for sw in shadows:
+            record_trace_event(
+                conn,
+                "warning",
+                trace_id=root_trace_id,
+                phase_trace_id=phase_trace_id,
+                session_id=session_id,
+                agent_id=agent_id,
+                status="warning",
+                name="shadow_mention",
+                payload={
+                    "message": sw["warning"],
+                    "target_agent_id": sw.get("agent_id", ""),
+                },
+            )
             yield {
                 "type": "warning",
                 "agentId": agent_id,
@@ -265,9 +465,38 @@ async def route_serial(
         )
 
         if verdict.warning:
+            record_trace_event(
+                conn,
+                "warning",
+                trace_id=root_trace_id,
+                phase_trace_id=phase_trace_id,
+                session_id=session_id,
+                agent_id=agent_id,
+                status="warning",
+                name="verdict_warning",
+                payload={"message": verdict.warning},
+            )
             yield {"type": "warning", "agentId": agent_id, "message": verdict.warning}
 
+        record_trace_event(
+            conn,
+            "verdict",
+            trace_id=root_trace_id,
+            phase_trace_id=phase_trace_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            status="terminal" if verdict.should_terminate else "continue",
+            name=verdict.reason,
+            payload={
+                "reason": verdict.reason,
+                "should_terminate": verdict.should_terminate,
+                "mention_targets": [target for target, _ in mentions],
+                "depth": depth,
+            },
+        )
+
         if verdict.should_terminate:
+            final_verdict = verdict.reason
             yield {"type": "verdict", "agentId": agent_id, "reason": verdict.reason}
             break
 
@@ -275,6 +504,23 @@ async def route_serial(
         tool_results = [e for e in tool_events if e["type"] == "tool_end"]
 
         if len(mentions) > 1:
+            for next_agent_id, mention_content in mentions:
+                record_trace_event(
+                    conn,
+                    "handoff",
+                    trace_id=root_trace_id,
+                    phase_trace_id=phase_trace_id,
+                    session_id=session_id,
+                    agent_id=next_agent_id,
+                    parent_agent_id=agent_id,
+                    name="parallel",
+                    payload={
+                        "from_agent": agent_id,
+                        "to_agent": next_agent_id,
+                        "mention_preview": mention_content[:500],
+                        "mention_sha256": content_fingerprint(mention_content),
+                    },
+                )
             # MultiMentionOrchestrator: 并行 fan-out，不继续链式传递
             # 先为每个 parallel mention 创建 worklist 条目，保证 crash recovery
             parallel_wids: list[str] = []
@@ -301,11 +547,33 @@ async def route_serial(
                 prompt_version=prompt_version,
                 agent_a_id=agent_id,
                 trace_ids=parallel_trace_ids,
+                root_trace_id=root_trace_id,
             ):
+                if event.get("type") == "error":
+                    trace_status = "error"
+                    final_verdict = "parallel_error"
                 yield event
+            if final_verdict != "parallel_error":
+                final_verdict = "parallel_complete"
             break  # 并行 branches 结束后不继续串行链路
 
         for next_agent_id, mention_content in mentions:
+            record_trace_event(
+                conn,
+                "handoff",
+                trace_id=root_trace_id,
+                phase_trace_id=phase_trace_id,
+                session_id=session_id,
+                agent_id=next_agent_id,
+                parent_agent_id=agent_id,
+                name="serial",
+                payload={
+                    "from_agent": agent_id,
+                    "to_agent": next_agent_id,
+                    "mention_preview": mention_content[:500],
+                    "mention_sha256": content_fingerprint(mention_content),
+                },
+            )
             handoff_msgs = package_handoff(
                 original_user_input=user_input,
                 agent_a_full_output=full_text,
@@ -323,4 +591,104 @@ async def route_serial(
             queue.append((next_agent_id, handoff_msgs, wid))
         depth += 1
 
-    yield {"type": "done", "session_id": session_id, "trace_id": trace_id, "phase_trace_ids": phase_trace_ids}
+    if queue and depth >= MAX_A2A_DEPTH:
+        final_verdict = "max_depth_reached"
+        trace_status = "warning"
+
+    set_trace_context(root_trace_id, session_id=session_id, agent_id="router")
+    record_trace_event(
+        conn,
+        "trace_end",
+        trace_id=root_trace_id,
+        session_id=session_id,
+        agent_id="router",
+        status=trace_status,
+        name=final_verdict,
+        payload={
+            "verdict": final_verdict,
+            "depth": depth,
+            "phase_trace_ids": phase_trace_ids,
+        },
+    )
+    yield {
+        "type": "done",
+        "session_id": session_id,
+        "trace_id": root_trace_id,
+        "phase_trace_ids": phase_trace_ids,
+    }
+
+
+async def route_serial(
+    user_input: str,
+    session_id: str,
+    conn: sqlite3.Connection | None = None,
+    prompt_version: str = "v2",
+    trace_id: str = "",
+) -> AsyncGenerator[dict, None]:
+    """Public router wrapper that always closes the root trace on failure."""
+    root_trace_id = trace_id or str(uuid.uuid4())
+    completed = False
+    try:
+        async for event in _route_serial_impl(
+            user_input,
+            session_id,
+            conn=conn,
+            prompt_version=prompt_version,
+            trace_id=root_trace_id,
+        ):
+            if event.get("type") == "done":
+                completed = True
+            yield event
+    except asyncio.CancelledError:
+        set_trace_context(root_trace_id, session_id=session_id, agent_id="router")
+        record_trace_event(
+            conn,
+            "warning",
+            trace_id=root_trace_id,
+            session_id=session_id,
+            agent_id="router",
+            status="warning",
+            name="client_cancelled",
+            payload={"message": "Client disconnected or cancelled the stream"},
+        )
+        if not completed:
+            record_trace_event(
+                conn,
+                "trace_end",
+                trace_id=root_trace_id,
+                session_id=session_id,
+                agent_id="router",
+                status="cancelled",
+                name="client_cancelled",
+                payload={"verdict": "client_cancelled"},
+            )
+        raise
+    except Exception as exc:
+        set_trace_context(root_trace_id, session_id=session_id, agent_id="router")
+        record_trace_event(
+            conn,
+            "error",
+            trace_id=root_trace_id,
+            session_id=session_id,
+            agent_id="router",
+            status="error",
+            name="unhandled_exception",
+            payload={"message": str(exc)},
+        )
+        if not completed:
+            record_trace_event(
+                conn,
+                "trace_end",
+                trace_id=root_trace_id,
+                session_id=session_id,
+                agent_id="router",
+                status="error",
+                name="unhandled_exception",
+                payload={"verdict": "unhandled_exception"},
+            )
+        yield {
+            "type": "error",
+            "agentId": "router",
+            "message": f"Routing failed: {exc}",
+            "trace_id": root_trace_id,
+        }

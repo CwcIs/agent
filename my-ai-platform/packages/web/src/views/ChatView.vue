@@ -2,106 +2,43 @@
 import { ref, nextTick, onUnmounted, computed } from "vue";
 import AgentDivider from "../components/AgentDivider.vue";
 import AgentTraceBar from "../components/AgentTraceBar.vue";
+import ChatTracePanel from "../components/ChatTracePanel.vue";
 import ThoughtBlock from "../components/ThoughtBlock.vue";
 import type { InsightChipData } from "../components/InsightChip.vue";
 import ThoughtComposer from "../components/ThoughtComposer.vue";
+import {
+  AGENT_VERB,
+  COMMANDS,
+  TAG_LABEL,
+  buildChipsFromTool,
+  getOrCreateSessionId,
+  parseTag,
+} from "../chat/model";
+import type { HandoffStep, Message } from "../chat/model";
+import { readSSEStream } from "../chat/sse";
+import { useChatTrace } from "../composables/useChatTrace";
 
-// 鈹€鈹€ Agent 閰嶇疆 鈹€鈹€
-const TAG_AGENT_MAP: Record<string, string> = {
-  review: "review",
-  critique: "review",
-  brain: "brain",
-};
-
-const TAG_LABEL: Record<string, string> = {
-  review: "Review Agent",
-  critique: "Review Agent",
-  brain: "Brain Agent",
-};
-
-const AGENT_VERB: Record<string, string> = {
-  knowledge: "正在整理相关记忆",
-  review: "正在挑战你的假设",
-  brain: "正在做联想扩展",
-};
-
-const AGENT_ICON: Record<string, string> = {
-  review: "R",
-  brain: "B",
-  knowledge: "K",
-};
-
-const AGENT_TRACE_BG: Record<string, string> = {
-  review: "rgba(255,184,107,0.1)",
-  brain: "rgba(184,140,255,0.1)",
-  knowledge: "rgba(124,156,255,0.1)",
-};
-const AGENT_TRACE_COLOR: Record<string, string> = {
-  review: "#FFB86B",
-  brain: "#B88CFF",
-  knowledge: "#7C9CFF",
-};
-
-function parseTag(text: string): { tag: string; label: string } | null {
-  const m = text.match(/#([a-zA-Z][a-zA-Z0-9_-]*)/);
-  if (!m) return null;
-  const tag = m[1].toLowerCase();
-  if (tag in TAG_AGENT_MAP) return { tag, label: TAG_LABEL[tag] };
-  return null;
-}
-
-// 鈹€鈹€ 鏁版嵁缁撴瀯 鈹€鈹€
-interface ToolCall {
-  name: string;
-  input?: Record<string, unknown>;
-  result?: string;
-  status: "running" | "done";
-  expanded?: boolean;
-  isError?: boolean;
-}
-
-interface HandoffStep {
-  from: string;
-  to: string;
-  trigger: string;
-  traceId?: string;
-}
-
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-  agentId?: string;
-  done?: boolean;
-  toolCalls?: ToolCall[];
-  insightChips?: InsightChipData[];
-  isSwitchBanner?: boolean;
-  timestamp: number;
-}
-
-const SESSION_KEY = "chat_session_id";
-function getOrCreateSessionId(): string {
-  let sid = sessionStorage.getItem(SESSION_KEY);
-  if (!sid) {
-    sid = crypto.randomUUID();
-    sessionStorage.setItem(SESSION_KEY, sid);
-  }
-  return sid;
-}
 const sessionId = getOrCreateSessionId();
 
 const emit = defineEmits<{ noteSaved: [] }>();
+const {
+  traceId,
+  traceExpanded,
+  traceData,
+  traceLoading,
+  phaseTraceLabel,
+  toggleTrace,
+  setActiveTrace,
+  onPhaseTraceClick,
+  resetToGlobalTrace,
+  resetTrace,
+} = useChatTrace();
 
 const messages = ref<Message[]>([]);
 const input = ref("");
 const streaming = ref(false);
 const activeTag = computed(() => parseTag(input.value));
 const messagesEl = ref<HTMLElement | null>(null);
-
-// 鈹€鈹€ 鍛戒护 鈹€鈹€
-const COMMANDS = [
-  { trigger: "/review", label: "Review Agent", desc: "审视你的想法", color: "#FFB86B", bg: "rgba(255,184,107,0.06)", border: "rgba(255,184,107,0.2)" },
-  { trigger: "/brain", label: "Brain Agent", desc: "联想扩展", color: "#B88CFF", bg: "rgba(184,140,255,0.06)", border: "rgba(184,140,255,0.2)" },
-];
 
 let abortController: AbortController | null = null;
 
@@ -137,110 +74,11 @@ function clearStaleTimer() {
   showStaleWarning.value = false;
 }
 
-// 鈹€鈹€ Trace 闈㈡澘 鈹€鈹€
-const traceId = ref<string | null>(null);
-const defaultTraceId = ref<string | null>(null);  // 榛樿鏄剧ず鐨?trace锛堥涓?phase锛夛紝per-phase 鍒囨崲鍚庡彲鎭㈠
-const traceExpanded = ref(false);
-interface TraceCall {
-  id: string; agent_id: string; model: string;
-  input_tokens: number; output_tokens: number;
-  cost_usd: number; latency_ms: number; status: string; created_at: string;
-}
-interface TraceAgent {
-  agent_id: string;
-  calls: TraceCall[];
-  subtotal: { tokens: number; cost_usd: number; latency_ms: number; call_count: number };
-}
-interface TraceData {
-  trace_id: string;
-  agents: TraceAgent[];
-  summary: { total_tokens: number; total_cost_usd: number; total_latency_ms: number; call_count: number };
-}
-const traceData = ref<TraceData | null>(null);
-const traceLoading = ref(false);
-const phaseTraceLabel = ref<string | null>(null);  // 褰撳墠鏌ョ湅鐨勬槸鍝釜 phase 鐨?trace
-
-async function fetchTrace(tid?: string) {
-  const targetId = tid || traceId.value;
-  if (!targetId || traceLoading.value) return;
-  traceLoading.value = true;
-  try {
-    const res = await fetch(`/trace/${targetId}`);
-    if (res.ok) traceData.value = await res.json();
-  } catch { /* ignore */ }
-  finally { traceLoading.value = false; }
-}
-
-function toggleTrace() {
-  traceExpanded.value = !traceExpanded.value;
-  if (traceExpanded.value && !traceData.value) fetchTrace();
-}
-
-function setActiveTrace(nextTraceId: string | null, options: { expand?: boolean; label?: string | null } = {}) {
-  if (!nextTraceId) return;
-  traceId.value = nextTraceId;
-  defaultTraceId.value = defaultTraceId.value || nextTraceId;
-  phaseTraceLabel.value = options.label ?? phaseTraceLabel.value;
-  if (options.expand) traceExpanded.value = true;
-  traceData.value = null;
-  fetchTrace(nextTraceId);
-}
-
-function onPhaseTraceClick(pid: string) {
-  // 淇濆瓨褰撳墠榛樿 traceId锛堝鏋滆繕娌′繚瀛橈級
-  if (!defaultTraceId.value) defaultTraceId.value = traceId.value;
-  setActiveTrace(pid, { expand: true, label: pid.slice(0, 8) });
-}
-
-// 閲嶇疆 per-phase trace 瑙嗗浘锛屽洖鍒伴粯璁?trace
-function resetToGlobalTrace() {
-  phaseTraceLabel.value = null;
-  traceId.value = defaultTraceId.value;
-  traceData.value = null;
-  traceExpanded.value = false;
-  if (traceId.value) fetchTrace(traceId.value);
-}
-
-function formatMs(ms: number): string {
-  if (ms >= 1000) return (ms / 1000).toFixed(1) + "s";
-  return ms + "ms";
-}
-function formatCost(usd: number): string {
-  return "$" + usd.toFixed(4);
-}
-function formatTime(ts: number): string {
-  const d = new Date(ts);
-  return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
-}
-
 // 鈹€鈹€ 骞惰 Agent 鐘舵€?鈹€鈹€
 const agentToolStatus = ref<Record<string, string | null>>({});
 
 // 鈹€鈹€ Insight Chips 绱Н 鈹€鈹€
 const accumulatedChips = ref<Record<string, InsightChipData[]>>({});
-
-function buildChipsFromTool(name: string, result: string, agentId: string): InsightChipData[] {
-  const chips: InsightChipData[] = [];
-  const suffix = `-${agentId}-${Date.now()}`;
-  if (name === "search_notes") {
-    try {
-      const parsed = JSON.parse(result);
-      const count = Array.isArray(parsed) ? parsed.length : parsed.results?.length || parsed.notes?.length || 0;
-      chips.push({ id: `ref${suffix}`, type: "note_ref", label: `引用 ${count} 条笔记`, count });
-    } catch {
-      chips.push({ id: `ref${suffix}`, type: "note_ref", label: "检索笔记" });
-    }
-  } else if (name === "save_note") {
-    chips.push({ id: `saved${suffix}`, type: "saved", label: "已保存为笔记" });
-  } else if (name === "archive_note") {
-    chips.push({ id: `arch${suffix}`, type: "tool_result", label: "已归档" });
-  } else if (name === "synthesize_notes") {
-    chips.push({ id: `syn${suffix}`, type: "note_ref", label: "合成笔记" });
-  } else {
-    chips.push({ id: `${name}${suffix}`, type: "tool_result", label: name });
-  }
-  return chips;
-}
 
 const runningAgents = computed(() => {
   return Object.entries(agentToolStatus.value)
@@ -268,63 +106,6 @@ function resetToolStatus() {
   agentToolStatus.value = {};
 }
 
-// 鈹€鈹€ 鎵嬪姩 SSE 娴佽В鏋愬櫒 鈹€鈹€
-async function readSSEStream(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  onEvent: (eventType: string, data: string) => void,
-  signal: AbortSignal,
-): Promise<void> {
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      if (signal.aborted) break;
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      buffer = buffer.replace(/\r\n/g, "\n");
-
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop() || "";
-
-      for (const part of parts) {
-        if (!part.trim()) continue;
-        const lines = part.split("\n");
-        let eventType = "";
-        let data = "";
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            eventType = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
-            data = line.slice(6);
-          }
-        }
-        if (eventType) onEvent(eventType, data);
-      }
-    }
-
-    if (buffer.trim()) {
-      const lines = buffer.split("\n");
-      let eventType = "";
-      let data = "";
-      for (const line of lines) {
-        if (line.startsWith("event: ")) {
-          eventType = line.slice(7).trim();
-        } else if (line.startsWith("data: ")) {
-          data = line.slice(6);
-        }
-      }
-      if (eventType) onEvent(eventType, data);
-    }
-  } catch (err: unknown) {
-    if (!signal.aborted) console.error("SSE stream read error:", err);
-  } finally {
-    reader.releaseLock();
-  }
-}
-
 // 鈹€鈹€ 鍙戦€?鈹€鈹€
 function sendMessage() {
   if (!input.value.trim() || streaming.value) return;
@@ -332,11 +113,7 @@ function sendMessage() {
   const userInput = input.value;
   messages.value.push({ role: "user", content: userInput, done: true, timestamp: Date.now() });
   streaming.value = true;
-  traceId.value = null;
-  defaultTraceId.value = null;
-  phaseTraceLabel.value = null;
-  traceData.value = null;
-  traceExpanded.value = false;
+  resetTrace();
   handoffSteps.value = [];
   accumulatedChips.value = {};
   currentVerdict.value = null;
@@ -711,66 +488,16 @@ onUnmounted(() => {
       @trace-click="onPhaseTraceClick"
     />
 
-    <!-- Trace Summary -->
-    <div v-if="traceId" class="trace-summary-panel">
-      <div v-if="phaseTraceLabel" class="phase-row">
-        <span>Viewing phase</span>
-        <code>{{ phaseTraceLabel }}</code>
-        <button @click.stop="resetToGlobalTrace">Back to default trace</button>
-      </div>
-
-      <div class="trace-card" @click="toggleTrace">
-        <div class="trace-card-head">
-          <span class="trace-card-title">Trace Summary</span>
-          <code>{{ traceId.slice(0, 8) }}</code>
-
-          <template v-if="traceData">
-            <span class="dot-sep">·</span>
-            <span>{{ traceData.summary.call_count }} calls</span>
-            <span class="dot-sep">·</span>
-            <span>{{ traceData.summary.total_tokens.toLocaleString() }} tokens</span>
-            <span class="dot-sep">·</span>
-            <span>{{ formatCost(traceData.summary.total_cost_usd) }}</span>
-            <span class="dot-sep">·</span>
-            <span>{{ formatMs(traceData.summary.total_latency_ms) }}</span>
-          </template>
-          <template v-else>
-            <span class="dot-sep">·</span>
-            <span>{{ traceLoading ? 'loading trace...' : 'click to load' }}</span>
-          </template>
-
-          <svg class="trace-chevron" :class="{ open: traceExpanded }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-          </svg>
-        </div>
-
-        <div v-if="traceExpanded && traceData" class="trace-detail-panel">
-          <div v-if="traceData.summary.call_count === 0" class="trace-empty">
-            No LLM calls were recorded for this trace id. Check provider/API-key errors, or whether this response came from cached/local logic.
-          </div>
-
-          <div v-for="agent in traceData.agents" :key="agent.agent_id" class="trace-agent-group">
-            <div class="trace-agent-row">
-              <span class="trace-agent-badge" :style="{ background: AGENT_TRACE_BG[agent.agent_id] || 'rgba(255,255,255,0.06)', color: AGENT_TRACE_COLOR[agent.agent_id] || '#9AA4B2' }">
-                {{ agent.agent_id }}
-              </span>
-              <span>{{ agent.subtotal.tokens.toLocaleString() }} tokens</span>
-              <span>{{ formatCost(agent.subtotal.cost_usd) }}</span>
-              <span class="trace-agent-latency">{{ formatMs(agent.subtotal.latency_ms) }}</span>
-            </div>
-
-            <div v-for="(call, callIndex) in agent.calls" :key="callIndex" class="trace-call-row">
-              <span class="model">{{ call.model }}</span>
-              <span>in:{{ call.input_tokens }}</span>
-              <span>out:{{ call.output_tokens }}</span>
-              <span>{{ formatCost(call.cost_usd) }}</span>
-              <span class="trace-agent-latency">{{ formatMs(call.latency_ms) }}</span>
-              <span :class="call.status === 'ok' ? 'ok' : 'bad'">{{ call.status }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <ChatTracePanel
+      v-if="traceId"
+      :trace-id="traceId"
+      :phase-trace-label="phaseTraceLabel"
+      :trace-data="traceData"
+      :trace-loading="traceLoading"
+      :trace-expanded="traceExpanded"
+      @toggle="toggleTrace"
+      @reset="resetToGlobalTrace"
+    />
     <!-- Thought Composer -->
     <ThoughtComposer
       v-model:input="input"
@@ -781,132 +508,4 @@ onUnmounted(() => {
     />
   </div>
 </template>
-
-
-<style scoped>
-.trace-summary-panel {
-  width: min(760px, calc(100% - 32px));
-  margin: 0 auto 12px;
-  flex-shrink: 0;
-}
-
-.phase-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 7px;
-  color: var(--text-tertiary);
-  font-size: 11px;
-}
-
-.phase-row code,
-.trace-card code {
-  border-radius: 7px;
-  background: rgba(255,255,255,0.06);
-  color: var(--text-secondary);
-  padding: 2px 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-}
-
-.phase-row button {
-  margin-left: auto;
-  color: var(--brand);
-  font-size: 11px;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.trace-card {
-  border: 1px solid var(--border-subtle);
-  border-radius: 16px;
-  background: rgba(255,255,255,0.04);
-  overflow: hidden;
-  cursor: pointer;
-}
-
-.trace-card-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-
-.trace-card-title {
-  color: var(--text-primary);
-  font-weight: 700;
-}
-
-.dot-sep {
-  color: var(--text-tertiary);
-  opacity: 0.55;
-}
-
-.trace-chevron {
-  width: 13px;
-  height: 13px;
-  margin-left: auto;
-  color: var(--text-tertiary);
-  transition: transform 150ms ease;
-}
-
-.trace-chevron.open {
-  transform: rotate(180deg);
-}
-
-.trace-detail-panel {
-  border-top: 1px solid var(--border-subtle);
-  padding: 10px 12px 12px;
-}
-
-.trace-empty {
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.trace-agent-group + .trace-agent-group {
-  margin-top: 10px;
-}
-
-.trace-agent-row,
-.trace-call-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-
-.trace-agent-row {
-  padding: 5px 0;
-}
-
-.trace-call-row {
-  padding: 4px 0 4px 30px;
-  color: var(--text-tertiary);
-}
-
-.trace-agent-badge {
-  border-radius: 7px;
-  padding: 3px 7px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.trace-agent-latency {
-  margin-left: auto;
-}
-
-.model {
-  color: var(--text-secondary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.ok { color: var(--color-success); }
-.bad { color: var(--color-danger); }
-</style>
 

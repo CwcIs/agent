@@ -9,6 +9,8 @@ import DailyDigestPanel from "./views/DailyDigestPanel.vue";
 import CommercialPrototype from "./views/CommercialPrototype.vue";
 import TraceConsole from "./views/TraceConsole.vue";
 import GraphView from "./views/GraphView.vue";
+import ProfileView from "./views/ProfileView.vue";
+import AdminView from "./views/AdminView.vue";
 import TopStatusBar from "./components/TopStatusBar.vue";
 import ToastProvider from "./components/ToastProvider.vue";
 
@@ -30,6 +32,8 @@ const toastRef = ref<InstanceType<typeof ToastProvider> | null>(null);
 const showCommercialPrototype = ref(false);
 const showTraceConsole = ref(false);
 const showGraphView = ref(false);
+const showProfileView = ref(false);
+const showAdminView = ref(false);
 
 // Daily digest state
 const showDigest = ref(false);
@@ -37,6 +41,9 @@ const dailyNoteCount = ref(0);
 const dailyTrendCount = ref(0);
 const dailyAnomalyCount = ref(0);
 const smartBadges = ref<Array<{ type: string; label: string; priority: string }>>([]);
+const notificationsEnabled = ref(false);
+let pollInterval: ReturnType<typeof setInterval> | null = null;
+let lastDigestCheck = ""; // track when we last checked for digest
 
 function handleFollowUp(q: string) {
   chatRef.value?.sendWithText(q);
@@ -96,10 +103,24 @@ function onKeydown(e: KeyboardEvent) {
     showGraphView.value = !showGraphView.value;
     return;
   }
+  // Ctrl+Shift+P — toggle ProfileView
+  if (e.ctrlKey && e.shiftKey && e.key === "P") {
+    e.preventDefault();
+    showProfileView.value = !showProfileView.value;
+    return;
+  }
+  // Ctrl+Shift+A — toggle AdminView
+  if (e.ctrlKey && e.shiftKey && e.key === "A") {
+    e.preventDefault();
+    showAdminView.value = !showAdminView.value;
+    return;
+  }
   // Escape — close drawer or overlays
   if (e.key === "Escape") {
     if (showTraceConsole.value) { showTraceConsole.value = false; return; }
     if (showGraphView.value) { showGraphView.value = false; return; }
+    if (showAdminView.value) { showAdminView.value = false; return; }
+    if (showProfileView.value) { showProfileView.value = false; return; }
     if (drawerOpen.value) { handleDetailClose(); return; }
     return;
   }
@@ -112,9 +133,30 @@ onMounted(() => {
   showGraphView.value = params.get("graph") === "1";
   document.addEventListener("keydown", onKeydown);
   fetchDailyBadge();
+
+  // Request Web Notification permission
+  if ("Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission().then(perm => {
+      notificationsEnabled.value = perm === "granted";
+    });
+  } else if ("Notification" in window && Notification.permission === "granted") {
+    notificationsEnabled.value = true;
+  }
+
+  // Periodic polling for smart badges and new digest (every 5 minutes)
+  pollInterval = setInterval(() => {
+    fetchDailyBadge();
+    checkNewDigest();
+  }, 5 * 60 * 1000);
+
+  // Check for new digest shortly after startup too
+  setTimeout(() => checkNewDigest(), 30 * 1000);
 });
 
-onUnmounted(() => document.removeEventListener("keydown", onKeydown));
+onUnmounted(() => {
+  document.removeEventListener("keydown", onKeydown);
+  if (pollInterval) clearInterval(pollInterval);
+});
 
 async function fetchDailyBadge() {
   try {
@@ -131,6 +173,27 @@ async function fetchDailyBadge() {
     if (badgeResp.ok) {
       const data = await badgeResp.json();
       smartBadges.value = data.badges || [];
+    }
+  } catch { /* ignore */ }
+}
+
+async function checkNewDigest() {
+  // Check if there's a new daily digest we should notify about
+  try {
+    const resp = await fetch("/digest");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const dateKey = data.date || "";
+    if (dateKey && dateKey !== lastDigestCheck && data.noteCount > 0) {
+      lastDigestCheck = dateKey;
+      if (notificationsEnabled.value && data.trends?.length) {
+        try {
+          new Notification("Daily Digest Ready", {
+            body: `${data.noteCount} notes · ${data.trends.length} trends · ${data.collisions?.length || 0} collisions`,
+            icon: "/favicon.ico",
+          });
+        } catch { /* notification failed */ }
+      }
     }
   } catch { /* ignore */ }
 }
@@ -153,6 +216,24 @@ provide("toast", toast);
   <!-- GraphView (full-screen overlay, toggled via Ctrl+Shift+G or ?graph=1) -->
   <div v-else-if="showGraphView" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
     <GraphView @select-note="handleGraphSelectNote" />
+  </div>
+
+  <!-- ProfileView (full-screen overlay, toggled via Ctrl+Shift+P) -->
+  <div v-else-if="showProfileView" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
+    <div class="flex items-center justify-between px-4 py-2 border-b shrink-0" style="border-color: var(--border-subtle)">
+      <span class="text-xs" style="color: var(--text-muted)">Knowledge Profile</span>
+      <button class="text-xs px-2 py-1 rounded hover:brightness-110" style="color: var(--text-tertiary)" @click="showProfileView = false">✕ Close</button>
+    </div>
+    <ProfileView />
+  </div>
+
+  <!-- AdminView (full-screen overlay, toggled via Ctrl+Shift+A) -->
+  <div v-else-if="showAdminView" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
+    <div class="flex items-center justify-between px-4 py-2 border-b shrink-0" style="border-color: var(--border-subtle)">
+      <span class="text-xs" style="color: var(--text-muted)">Admin Panel</span>
+      <button class="text-xs px-2 py-1 rounded hover:brightness-110" style="color: var(--text-tertiary)" @click="showAdminView = false">✕ Close</button>
+    </div>
+    <AdminView />
   </div>
 
   <AppShell v-else :sidebar-open="sidebarOpen" :drawer-open="drawerOpen">

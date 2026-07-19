@@ -13,6 +13,7 @@ import concurrent.futures
 import json
 import sqlite3
 import struct
+import time
 from functools import lru_cache, partial
 from typing import List
 
@@ -24,6 +25,38 @@ DIM = 384
 _embed_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 # Ctrl+C 时立刻取消等待中的 future，不等 worker 线程跑完 model.encode()
 atexit.register(lambda: _embed_executor.shutdown(wait=False, cancel_futures=True))
+
+# ── Phase 8.1: Vector search result cache ──
+# Simple TTL-based cache for search_similar results.
+# Keys on (query_hash, k), TTL 5 minutes.
+_cache: dict[str, tuple[float, list[dict]]] = {}
+_CACHE_TTL = 300  # 5 minutes
+_CACHE_MAX_SIZE = 64
+
+
+def _cache_key(query: str, k: int) -> str:
+    return f"{hash(query)}:{k}"
+
+
+def _cache_get(query: str, k: int) -> list[dict] | None:
+    key = _cache_key(query, k)
+    entry = _cache.get(key)
+    if entry is None:
+        return None
+    ts, results = entry
+    if time.time() - ts > _CACHE_TTL:
+        del _cache[key]
+        return None
+    return results
+
+
+def _cache_set(query: str, k: int, results: list[dict]) -> None:
+    key = _cache_key(query, k)
+    if len(_cache) >= _CACHE_MAX_SIZE:
+        # evict oldest
+        oldest = min(_cache.items(), key=lambda x: x[1][0])
+        del _cache[oldest[0]]
+    _cache[key] = (time.time(), results)
 
 
 @lru_cache(maxsize=1)
@@ -80,7 +113,12 @@ async def upsert_embedding(conn: sqlite3.Connection, note_id: str, text: str) ->
 
 
 async def search_similar(conn: sqlite3.Connection, query: str, k: int = 5) -> list[dict]:
-    """向量相似度搜索，返回最近 k 条笔记的 id + distance。"""
+    """向量相似度搜索，返回最近 k 条笔记的 id + distance。带 LRU 缓存。"""
+    # Check cache first
+    cached = _cache_get(query, k)
+    if cached is not None:
+        return cached
+
     ensure_vec_table(conn)
     vec = await embed(query)
     rows = conn.execute(
@@ -93,4 +131,8 @@ async def search_similar(conn: sqlite3.Connection, query: str, k: int = 5) -> li
         """,
         (serialize(vec), k),
     ).fetchall()
-    return [{"note_id": r[0], "distance": r[1]} for r in rows]
+    results = [{"note_id": r[0], "distance": r[1]} for r in rows]
+
+    # Cache results
+    _cache_set(query, k, results)
+    return results

@@ -727,7 +727,7 @@ def make_tools(conn: sqlite3.Connection) -> list:
             return json.dumps({"status": "error", "message": f"建议 {suggestion_id} 不存在或已处理"}, ensure_ascii=False)
 
         r = dict(row)
-        if r["suggestion_type"] == "relation":
+        if r["suggestion_type"] == "relation" or r["suggestion_type"] == "contradiction":
             edge_id = str(uuid.uuid4())
             conn.execute(
                 """INSERT OR IGNORE INTO edges
@@ -742,6 +742,34 @@ def make_tools(conn: sqlite3.Connection) -> list:
             )
             conn.commit()
             return json.dumps({"status": "ok", "suggestion_id": suggestion_id, "action": "created_edge", "edge_id": edge_id}, ensure_ascii=False)
+        elif r["suggestion_type"] == "tag_merge":
+            # Accept tag merge: write to tag_aliases
+            canonical = r.get("relation", "")
+            alias = r.get("evidence", "")
+            if canonical and alias:
+                tid = str(uuid.uuid4())
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO tag_aliases (id, canonical, alias) VALUES (?, ?, ?)",
+                        (tid, canonical, alias),
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
+            conn.execute(
+                "UPDATE pending_suggestions SET status='accepted', decided_at=datetime('now','localtime') WHERE id=?",
+                (suggestion_id,),
+            )
+            conn.commit()
+            return json.dumps({"status": "ok", "suggestion_id": suggestion_id, "action": "merged_tags"}, ensure_ascii=False)
+        elif r["suggestion_type"] == "tag_suggest":
+            # Accept tag suggestion: just mark accepted (tags applied at note level)
+            conn.execute(
+                "UPDATE pending_suggestions SET status='accepted', decided_at=datetime('now','localtime') WHERE id=?",
+                (suggestion_id,),
+            )
+            conn.commit()
+            return json.dumps({"status": "ok", "suggestion_id": suggestion_id, "action": "accepted_tag_suggestion"}, ensure_ascii=False)
         else:
             return json.dumps({"status": "error", "message": f"不支持的建议类型: {r['suggestion_type']}"}, ensure_ascii=False)
 
@@ -808,9 +836,42 @@ def make_tools(conn: sqlite3.Connection) -> list:
     async def web_search(query: str, k: int = 3) -> str:
         """
         搜索互联网获取最新信息。当笔记库和自己的知识不足以回答时使用。
-        返回 JSON：{ results: [{title, url, snippet}] }
+        优先使用 Tavily Search API（专为 AI Agent 设计），不可用时回退 DuckDuckGo。
+        返回 JSON：{ results: [{title, url, snippet, score?}], provider: 'tavily'|'duckduckgo' }
         """
         k = min(k, 5)
+
+        # Try Tavily first
+        try:
+            import os as _os
+            tavily_key = _os.environ.get("TAVILY_API_KEY", "")
+            if tavily_key:
+                import urllib.request, urllib.error
+                req_body = json.dumps({"api_key": tavily_key, "query": query, "max_results": k, "search_depth": "basic"}).encode()
+                req = urllib.request.Request(
+                    "https://api.tavily.com/search",
+                    data=req_body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=10).read()),
+                    timeout=12,
+                )
+                data = json.loads(resp.decode())
+                results = data.get("results", [])
+                return json.dumps({
+                    "results": [
+                        {"title": r.get("title", ""), "url": r.get("url", ""),
+                         "snippet": r.get("content", "")[:300], "score": r.get("score", 0)}
+                        for r in results[:k]
+                    ],
+                    "provider": "tavily",
+                }, ensure_ascii=False)
+        except Exception:
+            pass  # Fall through to DuckDuckGo
+
+        # DuckDuckGo fallback
         try:
             from duckduckgo_search import DDGS
             results = await asyncio.wait_for(
@@ -822,12 +883,94 @@ def make_tools(conn: sqlite3.Connection) -> list:
                     {"title": r.get("title", ""), "url": r.get("href", ""),
                      "snippet": r.get("body", "")[:200]}
                     for r in results
-                ]
+                ],
+                "provider": "duckduckgo",
             }, ensure_ascii=False)
         except asyncio.TimeoutError:
             return json.dumps({"status": "error", "message": "Web 搜索超时，请稍后重试"}, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"status": "error", "message": f"Web 搜索失败: {e}"}, ensure_ascii=False)
+
+    @tool
+    async def import_file(file_path: str, tags: str = "") -> str:
+        """
+        将本地文件导入为笔记（支持 .md / .pdf / .txt）。
+        file_path 为文件绝对路径。tags 用逗号分隔。
+        返回 JSON：{ status, note_id, title, word_count, source_file }
+        """
+        import hashlib
+        import os as _os
+
+        file_path = file_path.strip()
+        if not _os.path.isfile(file_path):
+            return json.dumps({"status": "error", "message": f"文件不存在: {file_path}"}, ensure_ascii=False)
+
+        filename = _os.path.basename(file_path)
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+        file_size = _os.path.getsize(file_path)
+        if file_size > 10 * 1024 * 1024:
+            return json.dumps({"status": "error", "message": "文件过大（>10MB）"}, ensure_ascii=False)
+
+        try:
+            with open(file_path, "rb") as f:
+                raw = f.read()
+        except Exception as e:
+            return json.dumps({"status": "error", "message": f"读取文件失败: {e}"}, ensure_ascii=False)
+
+        title = filename
+        content = ""
+        if ext in ("md", "markdown"):
+            content = raw.decode("utf-8", errors="replace")
+            if content.startswith("---"):
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    for line in parts[1].split("\n"):
+                        if line.startswith("title:"):
+                            title = line.split("title:", 1)[1].strip().strip("\"'")
+                    content = parts[2].strip()
+        elif ext == "pdf":
+            try:
+                from PyPDF2 import PdfReader
+                from io import BytesIO
+                reader = PdfReader(BytesIO(raw))
+                content = "\n".join(page.extract_text() or "" for page in reader.pages)[:50000]
+            except Exception:
+                content = "[PDF 解析失败]"
+        elif ext == "txt":
+            content = raw.decode("utf-8", errors="replace")
+        else:
+            content = raw.decode("utf-8", errors="replace")
+
+        note_id = str(uuid.uuid4())
+        tags_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
+        word_count = len(content.split())
+
+        conn.execute(
+            "INSERT INTO notes (id, title, content, tags_json, source_file, source_type, word_count) "
+            "VALUES (?, ?, ?, ?, ?, 'file', ?)",
+            (note_id, title[:200], content, json.dumps(tags_list, ensure_ascii=False), filename, word_count),
+        )
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        try:
+            conn.execute(
+                "INSERT INTO source_trace (id, note_id, source_type, source_file, content_hash, fetch_status) "
+                "VALUES (?, ?, 'file', ?, ?, 'ok')",
+                (str(uuid.uuid4()), note_id, filename, content_hash),
+            )
+        except Exception:
+            pass
+        conn.commit()
+
+        # 后台 embedding
+        task = asyncio.create_task(_background_embed(conn, note_id, title, content))
+        _background_tasks.add(task)
+        task.add_done_callback(_task_done_callback)
+
+        return json.dumps({
+            "status": "ok", "note_id": note_id, "title": title[:200],
+            "word_count": word_count, "source_file": filename,
+        }, ensure_ascii=False)
 
     @tool
     async def import_webpage(url: str, tags: str = "") -> str:
@@ -981,41 +1124,75 @@ def make_tools(conn: sqlite3.Connection) -> list:
         return json.dumps({"due_reviews": due[:k]}, ensure_ascii=False)
 
     @tool
-    def suggest_gaps() -> str:
+    async def suggest_gaps() -> str:
         """
         分析用户笔记库，发现值得探索但尚未涉及的知识缺口。
+        使用 LLM 分析话题覆盖和缺失维度。
         用户问"我还有什么没学"、"知识盲区"、"建议探索什么"时调用。
         返回 JSON：{ gaps: [{topic, reason, suggested_start}] }
         """
-        # 获取最近 30 条笔记的标签分布
+        # 获取最近 50 条笔记作为分析样本
         rows = conn.execute(
-            "SELECT title, tags_json FROM notes WHERE status='live' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 30"
+            "SELECT title, content, tags_json FROM notes WHERE status='live' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 50"
         ).fetchall()
         if len(rows) < 3:
             return json.dumps({"gaps": [], "message": "笔记太少，积累更多后再来探索知识缺口"}, ensure_ascii=False)
 
-        tag_counts: dict[str, int] = {}
-        for r in rows:
-            for tag in json.loads(r["tags_json"] or "[]"):
-                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        notes_text = "\n".join(
+            f"- 标题：{dict(r)['title']} | 标签：{json.loads(dict(r)['tags_json'] or '[]')} | 内容摘要：{dict(r)['content'][:100]}"
+            for r in rows
+        )
 
-        top_tags = sorted(tag_counts.items(), key=lambda x: -x[1])
-        gaps = []
+        prompt = f"""分析以下用户的笔记，找出 1-3 个值得探索但尚未深入的知识缺口。
 
-        # 基于简单规则检测缺口
-        KNOWN_PAIRS = [
-            ("技术", "商业", "技术实现与商业变现的平衡"),
-            ("产品", "市场", "产品定位与市场验证的关系"),
-            ("学习", "输出", "输入和输出的闭环——你可能在大量输入但缺乏输出"),
-            ("AI", "伦理", "AI 能力与伦理边界的反思"),
-            ("效率", "深度", "效率工具与深度思考的平衡"),
-        ]
+用户笔记样本：
+{notes_text}
 
-        existing = {t[0] for t in top_tags}
-        for a, b, reason in KNOWN_PAIRS:
-            if a in existing and b not in existing:
-                gaps.append({"topic": b, "reason": reason,
-                             "suggested_start": f"从你的「{a}」笔记出发，思考{b}维度"})
+要求：
+1. 找出用户已覆盖的话题，然后思考相邻但缺失的维度
+2. 每个缺口说明：为什么重要，可以从哪里开始了解
+3. 如果用户笔记覆盖比较全面，可以少返回或不返回
+
+以 JSON 数组返回：
+[{{"topic": "缺口话题", "reason": "为什么这个缺口值得填补", "suggested_start": "建议从哪开始"}}]
+
+只返回 JSON 数组。"""
+
+        from src.agent.providers.deepseek import make_deepseek
+        llm = make_deepseek()
+        try:
+            from langchain_core.messages import HumanMessage
+            resp = await asyncio.wait_for(
+                llm.ainvoke([HumanMessage(content=prompt)]),
+                timeout=TOOL_TIMEOUT,
+            )
+            text = resp.content.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+            gaps = json.loads(text)
+        except asyncio.TimeoutError:
+            return json.dumps({"gaps": [], "message": "LLM 调用超时，请稍后重试"}, ensure_ascii=False)
+        except Exception:
+            # fallback to rule-based
+            tag_counts: dict[str, int] = {}
+            for r in rows:
+                for tag in json.loads(dict(r)["tags_json"] or "[]"):
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+            top_tags = sorted(tag_counts.items(), key=lambda x: -x[1])
+            existing = {t[0] for t in top_tags}
+            gaps = []
+            KNOWN_PAIRS = [
+                ("技术", "商业", "技术实现与商业变现的平衡"),
+                ("产品", "市场", "产品定位与市场验证的关系"),
+                ("学习", "输出", "输入和输出的闭环——你可能在大量输入但缺乏输出"),
+                ("AI", "伦理", "AI 能力与伦理边界的反思"),
+                ("效率", "深度", "效率工具与深度思考的平衡"),
+            ]
+            for a, b, reason in KNOWN_PAIRS:
+                if a in existing and b not in existing:
+                    gaps.append({"topic": b, "reason": reason,
+                                 "suggested_start": f"从你的「{a}」笔记出发，思考{b}维度"})
 
         return json.dumps({"gaps": gaps[:3]}, ensure_ascii=False)
 
@@ -1046,6 +1223,196 @@ def make_tools(conn: sqlite3.Connection) -> list:
                 })
 
         return json.dumps({"suggestions": suggestions[:3]}, ensure_ascii=False)
+
+    # ── Phase 7.2: Calendar tools ──
+    @tool
+    async def get_today_events() -> str:
+        """获取今日日程列表。需要 CalDAV 配置。返回 JSON：{ events: [{summary, start, end}] }"""
+        from src.agent.calendar import get_today_events as _get
+        return await _get()
+
+    @tool
+    async def get_week_events() -> str:
+        """获取本周日程列表。需要 CalDAV 配置。返回 JSON：{ events: [{summary, start, end}] }"""
+        from src.agent.calendar import get_week_events as _get_week
+        return await _get_week()
+
+    @tool
+    async def create_calendar_event(title: str, date: str, time: str = "", duration_min: int = 60, notes: str = "") -> str:
+        """创建日历事件。date 格式 YYYY-MM-DD，time 可选 HH:MM。duration_min 默认 60 分钟。"""
+        from src.agent.calendar import create_event as _create
+        return await _create(title, date, time, duration_min, notes)
+
+    # ── Phase 7.4: Multimodal tools ──
+    @tool
+    def add_attachment(note_id: str, file_path: str) -> str:
+        """
+        给笔记添加附件（图片）。
+        file_path 为本地文件路径（支持 png/jpg/gif/webp）。
+        返回 JSON：{ status, path }
+        """
+        import os as _os
+        import shutil as _shutil
+
+        file_path = file_path.strip()
+        if not _os.path.isfile(file_path):
+            return json.dumps({"status": "error", "message": f"文件不存在: {file_path}"}, ensure_ascii=False)
+
+        ext = file_path.rsplit(".", 1)[-1].lower()
+        if ext not in ("png", "jpg", "jpeg", "gif", "webp"):
+            return json.dumps({"status": "error", "message": "Only image files allowed (png/jpg/gif/webp)"}, ensure_ascii=False)
+
+        # Determine data directory
+        attach_dir = _os.path.join(_os.path.dirname(__file__), "..", "data", "attachments")
+        _os.makedirs(attach_dir, exist_ok=True)
+
+        fname = f"{note_id}_{uuid.uuid4().hex[:8]}.{ext}"
+        dest = _os.path.join(attach_dir, fname)
+        _shutil.copy2(file_path, dest)
+
+        row = conn.execute("SELECT attachments_json FROM notes WHERE id = ?", (note_id,)).fetchone()
+        if not row:
+            return json.dumps({"status": "error", "message": f"笔记 {note_id} 不存在"}, ensure_ascii=False)
+
+        attachments = json.loads(row["attachments_json"] or "[]")
+        attachments.append({"type": "image", "path": f"attachments/{fname}", "filename": _os.path.basename(file_path)})
+        conn.execute("UPDATE notes SET attachments_json = ? WHERE id = ?", (json.dumps(attachments), note_id))
+        conn.commit()
+        return json.dumps({"status": "ok", "path": f"attachments/{fname}"}, ensure_ascii=False)
+
+    @tool
+    async def describe_images(note_id: str) -> str:
+        """
+        用 AI 描述笔记中图片的内容。需要多模态模型支持。
+        返回 JSON：{ descriptions: [{path, description}] }
+        """
+        row = conn.execute("SELECT attachments_json FROM notes WHERE id = ?", (note_id,)).fetchone()
+        if not row:
+            return json.dumps({"status": "error", "message": f"笔记 {note_id} 不存在"}, ensure_ascii=False)
+
+        attachments = json.loads(row["attachments_json"] or "[]")
+        images = [a for a in attachments if a.get("type") == "image"]
+        if not images:
+            return json.dumps({"descriptions": [], "message": "该笔记没有图片附件"}, ensure_ascii=False)
+
+        # Check for GPT-4o or Gemini for vision
+        import os as _os
+        gpt_key = _os.environ.get("OPENAI_API_KEY", "")
+        descriptions = []
+
+        if gpt_key:
+            try:
+                import base64
+                from openai import AsyncOpenAI
+
+                client = AsyncOpenAI(api_key=gpt_key)
+                for img in images[:3]:  # limit to 3 images
+                    img_dir = _os.path.join(_os.path.dirname(__file__), "..", "data")
+                    img_path = _os.path.join(img_dir, img["path"])
+                    if not _os.path.isfile(img_path):
+                        descriptions.append({"path": img["path"], "description": "[文件不存在]"})
+                        continue
+
+                    with open(img_path, "rb") as f:
+                        img_data = base64.b64encode(f.read()).decode()
+
+                    resp = await asyncio.wait_for(
+                        client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[{"role": "user", "content": [
+                                {"type": "text", "text": "用中文简短描述这张图片的内容（一句话）"},
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_data}"}},
+                            ]}],
+                            max_tokens=100,
+                        ),
+                        timeout=TOOL_TIMEOUT,
+                    )
+                    descriptions.append({"path": img["path"], "description": resp.choices[0].message.content})
+            except Exception as e:
+                descriptions.append({"path": "auto", "description": f"AI 描述失败: {e}"})
+        else:
+            descriptions = [{"path": img["path"], "description": "[需要配置 OPENAI_API_KEY 以启用图片描述]"} for img in images[:3]]
+
+        return json.dumps({"descriptions": descriptions}, ensure_ascii=False)
+
+    # ── Phase 7.5: Code Execution ──
+    @tool
+    async def run_python(code: str) -> str:
+        """
+        在沙箱中运行 Python 代码片段，用于数据分析、计算验证等。
+        超时 10s，禁用网络，仅可访问 /tmp。
+        返回 stdout/stderr。
+        需要 RUN_PYTHON_ENABLED=true 环境变量才会执行，否则返回 disabled。
+        """
+        import os as _os
+        if _os.environ.get("RUN_PYTHON_ENABLED", "").lower() != "true":
+            return json.dumps({"status": "disabled", "message": "run_python 未启用（设置 RUN_PYTHON_ENABLED=true）"}, ensure_ascii=False)
+
+        # Check Docker availability first
+        try:
+            import subprocess as _sp
+            docker_check = await asyncio.wait_for(
+                asyncio.to_thread(lambda: _sp.run(["docker", "info"], capture_output=True, timeout=5)),
+                timeout=8,
+            )
+            use_docker = docker_check.returncode == 0
+        except Exception:
+            use_docker = False
+
+        if use_docker:
+            # Docker sandbox: isolated, limited
+            try:
+                import subprocess as _sp
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
+                    f.write(code)
+                    tmp_path = f.name
+
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: _sp.run(
+                        [
+                            "docker", "run", "--rm",
+                            "--network=none",
+                            "--memory=256m",
+                            "--cpus=1",
+                            "--timeout=10",
+                            "-v", f"{tmp_path}:/code/script.py:ro",
+                            "python:3.11-slim",
+                            "python", "/code/script.py",
+                        ],
+                        capture_output=True, timeout=15,
+                    )),
+                    timeout=18,
+                )
+                _os.unlink(tmp_path)
+                return json.dumps({
+                    "stdout": result.stdout.decode("utf-8", errors="replace")[:4000],
+                    "stderr": result.stderr.decode("utf-8", errors="replace")[:2000],
+                    "returncode": result.returncode,
+                }, ensure_ascii=False)
+            except Exception as e:
+                return json.dumps({"status": "error", "message": f"Docker execution failed: {e}"}, ensure_ascii=False)
+        else:
+            # Subprocess fallback: restricted
+            try:
+                import subprocess as _sp
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: _sp.run(
+                        ["python", "-c", code],
+                        capture_output=True, timeout=10,
+                        text=True,
+                    )),
+                    timeout=12,
+                )
+                return json.dumps({
+                    "stdout": result.stdout[:4000],
+                    "stderr": result.stderr[:2000],
+                    "returncode": result.returncode,
+                }, ensure_ascii=False)
+            except asyncio.TimeoutError:
+                return json.dumps({"status": "error", "message": "代码执行超时（>10s）"}, ensure_ascii=False)
+            except Exception as e:
+                return json.dumps({"status": "error", "message": f"Execution failed: {e}"}, ensure_ascii=False)
 
     # ── Phase 7.3: Dynamic custom tools from DB ──
     custom = []
@@ -1090,4 +1457,4 @@ def make_tools(conn: sqlite3.Connection) -> list:
     except Exception:
         pass
 
-    return [search_notes, save_note, get_note, archive_note, get_notes_summary, synthesize_notes, get_note_relations, detect_collisions, suggest_tags, suggest_relation, accept_suggestion, reject_suggestion, merge_tags, list_tag_aliases, web_search, import_webpage, review_note, get_due_reviews, suggest_gaps, suggest_writing] + custom
+    return [search_notes, save_note, get_note, archive_note, get_notes_summary, synthesize_notes, get_note_relations, detect_collisions, suggest_tags, suggest_relation, accept_suggestion, reject_suggestion, merge_tags, list_tag_aliases, web_search, import_webpage, import_file, review_note, get_due_reviews, suggest_gaps, suggest_writing, get_today_events, get_week_events, create_calendar_event, add_attachment, describe_images, run_python] + custom

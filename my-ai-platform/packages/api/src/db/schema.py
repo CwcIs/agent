@@ -347,6 +347,10 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("source_url", "''", "TEXT"),
         ("source_file", "''", "TEXT"),
         ("source_type", "'user'", "TEXT"),
+        ("word_count", "0", "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE notes ADD COLUMN {col} {col_type} NOT NULL DEFAULT {default}")
         except Exception:
             pass  # 列已存在
 

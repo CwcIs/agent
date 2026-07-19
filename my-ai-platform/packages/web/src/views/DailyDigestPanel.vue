@@ -20,6 +20,8 @@ interface Digest {
     connection: string;
     angle: string;
   }>;
+  dueReviews?: Array<{ id: string; title: string; review_count: number; interval_days: number }>;
+  writingSuggestions?: Array<{ topic: string; note_count: number }>;
 }
 
 const digest = ref<Digest | null>(null);
@@ -208,6 +210,43 @@ onMounted(() => loadDigest("daily"));
             {{ a }}
           </li>
         </ul>
+      </div>
+
+      <!-- 待复习 -->
+      <div v-if="digest.dueReviews?.length">
+        <span class="text-[9px] uppercase tracking-wide font-medium" style="color: var(--color-warning)">待复习</span>
+        <div class="mt-1 space-y-0.5">
+          <div
+            v-for="r in digest.dueReviews"
+            :key="r.id"
+            class="text-[10px] px-2 py-1 rounded-lg flex items-center gap-1.5"
+            style="background: rgba(255,184,107,0.04); border: 1px solid rgba(255,184,107,0.08)"
+          >
+            <span style="color: var(--text-muted)">{{ r.title }}</span>
+            <span class="text-[9px] ml-auto shrink-0" style="color: var(--text-tertiary)">
+              间隔 {{ r.interval_days }}d · 已复习 {{ r.review_count }} 次
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 写作灵感 -->
+      <div v-if="digest.writingSuggestions?.length">
+        <span class="text-[9px] uppercase tracking-wide font-medium" style="color: var(--agent-brain)">写作灵感</span>
+        <div class="mt-1 space-y-0.5">
+          <button
+            v-for="ws in digest.writingSuggestions"
+            :key="ws.topic"
+            class="text-[10px] px-2 py-1 rounded-lg flex items-center gap-1.5 w-full text-left transition-all hover:brightness-110"
+            style="background: rgba(171,137,245,0.04); border: 1px solid rgba(171,137,245,0.08); color: var(--agent-brain)"
+            @click="emit('followUp', `帮我把「${ws.topic}」的 ${ws.note_count} 条笔记写成一篇综述`)"
+          >
+            <svg class="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+            </svg>
+            <span>「{{ ws.topic }}」已有 {{ ws.note_count }} 条笔记，可以写综述了</span>
+          </button>
+        </div>
       </div>
 
       <!-- Follow-up 问题 -->

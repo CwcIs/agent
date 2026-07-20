@@ -210,7 +210,7 @@ provide("toast", toast);
 
   <!-- Trace Console (full-screen overlay, toggled via Ctrl+Shift+T or ?trace=1) -->
   <div v-else-if="showTraceConsole" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
-    <TraceConsole />
+    <TraceConsole @close="showTraceConsole = false" />
   </div>
 
   <!-- GraphView (full-screen overlay, toggled via Ctrl+Shift+G or ?graph=1) -->

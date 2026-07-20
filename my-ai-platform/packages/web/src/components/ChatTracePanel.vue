@@ -1,20 +1,20 @@
 <script setup lang="ts">
-import {
-  AGENT_TRACE_BG,
-  AGENT_TRACE_COLOR,
-  formatCost,
-  formatMs,
-} from "../chat/model";
+import { computed } from "vue";
 import type { TraceData } from "../composables/useChatTrace";
-import { trustLabel } from "../trace/model";
+import {
+  agentMeta,
+  eventLabel,
+  eventSummary,
+  eventTone,
+  formatCost,
+  formatLatency,
+  importantEvents,
+  trustLabel,
+  verdictDescription,
+  verdictLabel,
+} from "../trace/model";
 
-function trustClass(status: string): string {
-  if (status === "verified") return "ok";
-  if (status === "compromised") return "bad";
-  return "warn";
-}
-
-defineProps<{
+const props = defineProps<{
   traceId: string;
   phaseTraceLabel: string | null;
   traceData: TraceData | null;
@@ -22,210 +22,114 @@ defineProps<{
   traceExpanded: boolean;
 }>();
 
-defineEmits<{
-  toggle: [];
-  reset: [];
-}>();
+defineEmits<{ toggle: []; reset: [] }>();
+
+const visibleEvents = computed(() =>
+  props.traceData ? importantEvents(props.traceData.events).slice(0, 6) : [],
+);
+
+const flowLabel = computed(() => {
+  if (!props.traceData?.agents.length) return "正在等待执行数据";
+  return props.traceData.agents.map((agent) => agentMeta(agent.agent_id).label).join(" → ");
+});
+
+function trustClass(status: string): string {
+  return `trust-${status}`;
+}
 </script>
 
 <template>
-  <div class="trace-summary-panel">
+  <div class="chat-trace-wrap">
     <div v-if="phaseTraceLabel" class="phase-row">
-      <span>Viewing phase</span>
+      <span>当前查看单个 Agent 阶段</span>
       <code>{{ phaseTraceLabel }}</code>
-      <button @click.stop="$emit('reset')">Back to default trace</button>
+      <button @click.stop="$emit('reset')">返回完整链路</button>
     </div>
 
-    <div class="trace-card" @click="$emit('toggle')">
-      <div class="trace-card-head">
-        <span class="trace-card-title">Trace Summary</span>
-        <code>{{ traceId.slice(0, 8) }}</code>
+    <section class="chat-trace-card" :class="{ open: traceExpanded }">
+      <button class="trace-summary-button" @click="$emit('toggle')">
+        <span class="trace-symbol"><i /><i /><i /></span>
+        <span class="summary-copy">
+          <span class="summary-label">本次执行 Trace</span>
+          <strong>{{ flowLabel }}</strong>
+        </span>
 
         <template v-if="traceData">
-          <span class="dot-sep">·</span>
-          <span :class="trustClass(traceData.trust.status)">
-            {{ trustLabel(traceData.trust.status) }} {{ traceData.trust.score }}
+          <span class="summary-status" :class="trustClass(traceData.trust.status)">
+            <i />{{ trustLabel(traceData.trust.status) }} {{ traceData.trust.score }}
           </span>
-          <span class="dot-sep">·</span>
-          <span>{{ traceData.events.length }} events</span>
-          <span class="dot-sep">·</span>
-          <span>{{ formatCost(traceData.summary.total_cost_usd) }}</span>
-          <span class="dot-sep">·</span>
-          <span>{{ formatMs(traceData.summary.total_latency_ms) }}</span>
+          <span class="summary-metric"><small>耗时</small>{{ formatLatency(traceData.summary.total_latency_ms) }}</span>
+          <span class="summary-metric"><small>模型</small>{{ traceData.summary.call_count }} 次</span>
+          <span class="summary-metric"><small>工具</small>{{ traceData.summary.tool_count }} 次</span>
+          <span class="summary-metric"><small>成本</small>{{ formatCost(traceData.summary.total_cost_usd) }}</span>
         </template>
-        <template v-else>
-          <span class="dot-sep">·</span>
-          <span>{{ traceLoading ? "loading trace..." : "click to load" }}</span>
-        </template>
+        <span v-else class="summary-loading">{{ traceLoading ? "正在还原链路…" : "展开查看执行过程" }}</span>
 
         <svg class="trace-chevron" :class="{ open: traceExpanded }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
         </svg>
-      </div>
+      </button>
 
-      <div v-if="traceExpanded && traceData" class="trace-detail-panel">
-        <div v-if="traceData.trust.status !== 'verified'" class="trace-empty">
-          {{ traceData.trust.claim }}
-          <span v-if="traceData.trust.missing_required_events.length">
-            · 缺少 {{ traceData.trust.missing_required_events.join(", ") }}
-          </span>
+      <div v-if="traceExpanded && traceData" class="trace-expanded">
+        <div class="outcome-row">
+          <div>
+            <span class="section-kicker">OUTCOME</span>
+            <strong>{{ verdictLabel(traceData.summary.verdict) }}</strong>
+            <p>{{ verdictDescription(traceData.summary.verdict) }}</p>
+          </div>
+          <div class="token-stat"><span>{{ traceData.summary.total_tokens.toLocaleString() }}</span><small>Token</small></div>
+          <div class="token-stat"><span>{{ traceData.summary.retrieval_count }}</span><small>检索</small></div>
+          <div class="token-stat"><span>{{ traceData.trust.verified_citation_count }}</span><small>引用验证</small></div>
         </div>
 
-        <div v-for="agent in traceData.agents" :key="agent.agent_id" class="trace-agent-group">
-          <div class="trace-agent-row">
-            <span class="trace-agent-badge" :style="{ background: AGENT_TRACE_BG[agent.agent_id] || 'rgba(255,255,255,0.06)', color: AGENT_TRACE_COLOR[agent.agent_id] || '#9AA4B2' }">
-              {{ agent.agent_id }}
-            </span>
-            <span>{{ agent.call_count }} LLM</span>
-            <span>{{ agent.phase_trace_ids.length }} phases</span>
+        <div class="agent-route">
+          <template v-for="(agent, index) in traceData.agents" :key="agent.agent_id">
+            <div class="agent-stage" :style="{ '--agent-color': agentMeta(agent.agent_id).color }">
+              <span class="agent-dot">{{ agentMeta(agent.agent_id).label.slice(0, 1) }}</span>
+              <div><strong>{{ agentMeta(agent.agent_id).label }}</strong><small>{{ agentMeta(agent.agent_id).role }}</small></div>
+              <span class="agent-count">{{ agent.call_count }} 模型 · {{ agent.timeline.filter(event => event.event_type === 'tool_end').length }} 工具</span>
+            </div>
+            <span v-if="index < traceData.agents.length - 1" class="route-arrow">→</span>
+          </template>
+        </div>
+
+        <div class="mini-timeline">
+          <div class="timeline-heading"><span>关键过程</span><small>共 {{ traceData.events.length }} 个事件</small></div>
+          <div v-for="event in visibleEvents" :key="event.id" class="mini-event" :class="`tone-${eventTone(event)}`">
+            <span class="event-marker" />
+            <span class="event-number">{{ String(event.sequence).padStart(2, "0") }}</span>
+            <div><strong>{{ eventLabel(event.event_type) }}</strong><p>{{ eventSummary(event) }}</p></div>
+            <span v-if="event.agent_id" class="event-agent" :style="{ '--agent-color': agentMeta(event.agent_id).color }">{{ agentMeta(event.agent_id).label }}</span>
           </div>
         </div>
 
-        <div class="trace-agent-row trace-totals">
-          <span>{{ traceData.summary.call_count }} LLM</span>
-          <span>{{ traceData.summary.tool_count }} tools</span>
-          <span>{{ traceData.summary.retrieval_count }} retrievals</span>
-          <span>{{ traceData.trust.verified_citation_count }} verified citations</span>
-          <span class="trace-agent-latency">{{ traceData.summary.total_tokens.toLocaleString() }} tokens</span>
+        <div v-if="traceData.trust.status !== 'verified'" class="trace-warning">
+          <span>!</span>
+          <p><strong>这条链路需要关注</strong>{{ traceData.trust.claim }}<template v-if="traceData.trust.missing_required_events.length"> · 缺少 {{ traceData.trust.missing_required_events.join("、") }}</template></p>
         </div>
       </div>
-    </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.trace-summary-panel {
-  width: min(760px, calc(100% - 32px));
-  margin: 0 auto 12px;
-  flex-shrink: 0;
-}
-
-.phase-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 7px;
-  color: var(--text-tertiary);
-  font-size: 11px;
-}
-
-.phase-row code,
-.trace-card code {
-  border-radius: 7px;
-  background: rgba(255,255,255,0.06);
-  color: var(--text-secondary);
-  padding: 2px 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-}
-
-.phase-row button {
-  margin-left: auto;
-  color: var(--brand);
-  font-size: 11px;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.trace-card {
-  border: 1px solid var(--border-subtle);
-  border-radius: 16px;
-  background: rgba(255,255,255,0.04);
-  overflow: hidden;
-  cursor: pointer;
-}
-
-.trace-card-head,
-.trace-agent-row,
-.trace-call-row {
-  display: flex;
-  align-items: center;
-}
-
-.trace-card-head {
-  gap: 8px;
-  padding: 10px 12px;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-
-.trace-card-title {
-  color: var(--text-primary);
-  font-weight: 700;
-}
-
-.dot-sep {
-  color: var(--text-tertiary);
-  opacity: 0.55;
-}
-
-.trace-chevron {
-  width: 13px;
-  height: 13px;
-  margin-left: auto;
-  color: var(--text-tertiary);
-  transition: transform 150ms ease;
-}
-
-.trace-chevron.open {
-  transform: rotate(180deg);
-}
-
-.trace-detail-panel {
-  border-top: 1px solid var(--border-subtle);
-  padding: 10px 12px 12px;
-}
-
-.trace-empty {
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.trace-agent-group + .trace-agent-group {
-  margin-top: 10px;
-}
-
-.trace-agent-row,
-.trace-call-row {
-  gap: 9px;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-
-.trace-agent-row {
-  padding: 5px 0;
-}
-
-.trace-call-row {
-  padding: 4px 0 4px 30px;
-  color: var(--text-tertiary);
-}
-
-.trace-agent-badge {
-  border-radius: 7px;
-  padding: 3px 7px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.trace-agent-latency {
-  margin-left: auto;
-}
-
-.model {
-  color: var(--text-secondary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.trace-totals {
-  margin-top: 10px;
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 10px;
-}
-
-.ok { color: var(--color-success); }
-.warn { color: #f5b942; }
-.bad { color: var(--color-danger); }
+.chat-trace-wrap { width: min(900px, calc(100% - 32px)); margin: 0 auto 12px; flex-shrink: 0; }
+.phase-row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; color: var(--text-tertiary); font-size: 10px; }
+.phase-row code { border-radius: 6px; padding: 2px 6px; background: rgba(255,255,255,.055); color: var(--text-secondary); font-size: 9px; }
+.phase-row button { margin-left: auto; color: #91a8ff; font-size: 10px; }
+.chat-trace-card { overflow: hidden; border: 1px solid rgba(255,255,255,.09); border-radius: 16px; background: linear-gradient(135deg, rgba(20,24,35,.9), rgba(15,18,27,.78)); box-shadow: 0 12px 30px rgba(0,0,0,.18); }
+.chat-trace-card.open { border-color: rgba(124,156,255,.2); }
+.trace-summary-button { display: flex; width: 100%; min-height: 64px; align-items: center; gap: 13px; padding: 10px 14px; text-align: left; }
+.trace-symbol { display: flex; width: 34px; height: 34px; flex-shrink: 0; align-items: flex-end; justify-content: center; gap: 3px; border-radius: 10px; padding-bottom: 9px; background: rgba(124,156,255,.1); }
+.trace-symbol i { width: 3px; border-radius: 3px; background: #8ea6ff; }.trace-symbol i:nth-child(1){height:7px}.trace-symbol i:nth-child(2){height:14px}.trace-symbol i:nth-child(3){height:10px}
+.summary-copy { display: flex; min-width: 150px; flex-direction: column; }.summary-label { color: var(--text-tertiary); font-size: 8px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }.summary-copy strong { margin-top: 4px; overflow: hidden; color: var(--text-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.summary-status { display: inline-flex; align-items: center; gap: 5px; border-radius: 7px; padding: 5px 8px; font-size: 9px; font-weight: 650; }.summary-status i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.summary-metric { display: flex; min-width: 50px; flex-direction: column; color: var(--text-secondary); font-size: 10px; }.summary-metric small { margin-bottom: 2px; color: var(--text-tertiary); font-size: 8px; }.summary-loading { color: var(--text-tertiary); font-size: 9px; }.trace-chevron { width: 13px; height: 13px; margin-left: auto; color: var(--text-tertiary); transition: transform .18s ease; }.trace-chevron.open { transform: rotate(180deg); }
+.trace-expanded { border-top: 1px solid rgba(255,255,255,.07); padding: 14px; }
+.outcome-row { display: grid; grid-template-columns:minmax(0,1fr) repeat(3,72px); gap: 10px; align-items: center; border: 1px solid rgba(112,224,163,.12); border-radius: 11px; padding: 12px; background: rgba(112,224,163,.035); }.section-kicker { color: #707b8e; font-size: 8px; font-weight: 700; letter-spacing: .14em; }.outcome-row>div:first-child strong { display: block; margin-top: 4px; color: #84e5ad; font-size: 11px; }.outcome-row p { margin-top: 3px; color: var(--text-tertiary); font-size: 9px; line-height: 1.45; }.token-stat { display: flex; align-items: center; flex-direction: column; border-left: 1px solid rgba(255,255,255,.07); }.token-stat span { font-size: 13px; font-weight: 650; }.token-stat small { margin-top: 2px; color: var(--text-tertiary); font-size: 8px; }
+.agent-route { display: flex; align-items: center; gap: 7px; margin-top: 10px; overflow-x: auto; }.agent-stage { display: flex; min-width: 190px; flex: 1; align-items: center; gap: 8px; border: 1px solid color-mix(in srgb,var(--agent-color) 16%,transparent); border-radius: 10px; padding: 9px; background: color-mix(in srgb,var(--agent-color) 4%,transparent); }.agent-dot { display: grid; width: 27px; height: 27px; flex-shrink: 0; place-items: center; border-radius: 8px; color: var(--agent-color); background: color-mix(in srgb,var(--agent-color) 12%,transparent); font-size: 9px; font-weight: 750; }.agent-stage div { display: flex; flex-direction: column; }.agent-stage strong { font-size: 9px; }.agent-stage small { margin-top: 2px; color: var(--text-tertiary); font-size: 8px; }.agent-count { margin-left: auto; color: var(--text-tertiary); font-size: 8px; white-space: nowrap; }.route-arrow { color: #596477; font-size: 11px; }
+.mini-timeline { margin-top: 12px; border-top: 1px solid rgba(255,255,255,.06); padding-top: 10px; }.timeline-heading { display: flex; justify-content: space-between; margin-bottom: 4px; color: var(--text-secondary); font-size: 9px; }.timeline-heading small { color: var(--text-tertiary); font-size: 8px; }.mini-event { position: relative; display: grid; grid-template-columns:8px 22px minmax(0,1fr) auto; gap: 8px; align-items: start; min-height: 40px; padding: 7px 0; }.event-marker { width: 7px; height: 7px; margin-top: 3px; border-radius: 50%; background: #727d90; }.tone-info .event-marker{background:#7c9cff}.tone-success .event-marker{background:#70e0a3}.tone-warning .event-marker{background:#f5b942}.tone-danger .event-marker{background:#f27b7b}.event-number { color: #5e687b; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 8px; }.mini-event div strong { display:block; font-size: 9px; }.mini-event p { margin-top: 3px; color: var(--text-tertiary); font-size: 8px; line-height: 1.45; }.event-agent { border-radius: 5px; padding: 2px 5px; color: var(--agent-color); background: color-mix(in srgb,var(--agent-color) 9%,transparent); font-size: 8px; }
+.trace-warning { display: flex; gap: 8px; margin-top: 10px; border: 1px solid rgba(245,185,66,.15); border-radius: 10px; padding: 9px 10px; background: rgba(245,185,66,.045); color: #e6c475; }.trace-warning>span { display:grid;width:17px;height:17px;flex-shrink:0;place-items:center;border-radius:50%;background:rgba(245,185,66,.12);font-size:9px;font-weight:800}.trace-warning p{color:var(--text-tertiary);font-size:8px;line-height:1.5}.trace-warning strong{display:block;margin-bottom:2px;color:#e8c875;font-size:9px}
+.trust-verified{color:#70e0a3;background:rgba(112,224,163,.1)}.trust-degraded{color:#f5b942;background:rgba(245,185,66,.1)}.trust-partial{color:#aab4c3;background:rgba(148,163,184,.1)}.trust-compromised{color:#f27b7b;background:rgba(239,68,68,.1)}
+@media(max-width:800px){.summary-metric:nth-of-type(n+3){display:none}.outcome-row{grid-template-columns:1fr repeat(2,60px)}.token-stat:last-child{display:none}}
 </style>

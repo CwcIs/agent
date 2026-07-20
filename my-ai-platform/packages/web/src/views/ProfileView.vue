@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, onMounted } from "vue";
 
 interface UserProfile {
@@ -38,9 +38,19 @@ const agentLabels: Record<string, string> = {
 };
 
 const levelColors: Record<string, string> = {
+  rich: "#70E0A3",
+  emerging: "#FFB86B",
+  empty: "var(--text-tertiary)",
   "丰富": "#70E0A3",
   "有涉猎": "#FFB86B",
   "空白": "var(--text-tertiary)",
+};
+
+const thinkingStyleLabels: Record<string, string> = {
+  analytical: "Analytical",
+  divergent: "Divergent",
+  practical: "Practical",
+  label: "Label",
 };
 
 onMounted(async () => {
@@ -121,7 +131,7 @@ function exportNotes(fmt: string) {
           <div class="space-y-2">
             <div v-for="(val, key) in profile.thinking_style" :key="key" v-show="typeof val === 'number'">
               <div class="flex justify-between text-[11px] mb-0.5">
-                <span style="color: var(--text-muted)">{{ { analytical: 'Analytical', divergent: 'Divergent', practical: 'Practical' }[key] || key }}</span>
+                <span style="color: var(--text-muted)">{{ thinkingStyleLabels[String(key)] || key }}</span>
                 <span style="color: var(--text-tertiary)">{{ (val as number * 100).toFixed(0) }}%</span>
               </div>
               <div class="h-1 rounded-full" style="background: rgba(255,255,255,0.05)">
@@ -160,7 +170,7 @@ function exportNotes(fmt: string) {
           <span v-for="int in profile.interests" :key="int.tag"
             class="text-[11px] px-2.5 py-1 rounded-full border"
             :style="{ background: 'rgba(124,156,255,0.06)', borderColor: 'rgba(124,156,255,0.15)', color: 'var(--agent-knowledge)' }">
-            {{ int.tag }} <span style="opacity: 0.5">×{{ int.count }}</span>
+            {{ int.tag }} <span style="opacity: 0.5">脳{{ int.count }}</span>
           </span>
         </div>
       </div>
@@ -254,3 +264,4 @@ function exportNotes(fmt: string) {
   margin-bottom: 10px;
 }
 </style>
+

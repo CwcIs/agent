@@ -1,118 +1,82 @@
-@tailwind base;
+﻿@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ── AI Thought Studio — Warm Dark Color System ── */
 :root {
-  --app-bg: #0D0E12;
-  --surface-base: #13151B;
-  --surface-raised: #191C24;
-  --surface-hover: #20242E;
-  --border-subtle: rgba(255,255,255,0.06);
-  --border-strong: rgba(255,255,255,0.10);
-  --text-primary: #F4F1EA;
-  --text-secondary: #A9A29A;
-  --text-tertiary: #6F767E;
-  --brand: #8B7CFF;
-  --brand-soft: rgba(139,124,255,0.10);
-  --brand-border: rgba(139,124,255,0.25);
-
-  --agent-knowledge: #6EA8FF;
-  --agent-review: #FFB86C;
-  --agent-brain: #B892FF;
-
-  --color-success: #70E0A3;
-  --color-warning: #FFD166;
-  --color-danger: #FF6B6B;
-
-  /* Legacy aliases — 旧组件兼容，Phase 6 删除 */
+  color-scheme: dark;
+  --app-bg: #08090d;
+  --app-bg-2: #0d0f16;
+  --surface-base: rgba(16, 18, 27, 0.78);
+  --surface-raised: rgba(24, 27, 39, 0.82);
+  --surface-hover: rgba(255, 255, 255, 0.065);
+  --surface-glass: rgba(255, 255, 255, 0.045);
+  --border-subtle: rgba(255, 255, 255, 0.075);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --text-primary: #f6f3ec;
+  --text-secondary: #b7afa6;
+  --text-tertiary: #777782;
+  --brand: #9a86ff;
+  --brand-2: #c6a6ff;
+  --brand-soft: rgba(154, 134, 255, 0.14);
+  --brand-border: rgba(154, 134, 255, 0.34);
+  --agent-knowledge: #79aeff;
+  --agent-review: #ffbd73;
+  --agent-brain: #c49aff;
+  --color-success: #77e4ad;
+  --color-warning: #ffd56a;
+  --color-danger: #ff7474;
   --bg-root: var(--app-bg);
+  --bg-app: var(--app-bg);
   --bg-panel: var(--surface-base);
   --bg-card: var(--surface-raised);
   --text-main: var(--text-primary);
   --text-muted: var(--text-secondary);
 }
 
-/* ── Base Reset ── */
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--app-bg); color: var(--text-primary); }
+html, body, #app { width: 100%; height: 100%; }
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 18% -8%, rgba(154, 134, 255, 0.18), transparent 34%),
+    radial-gradient(circle at 82% 6%, rgba(121, 174, 255, 0.10), transparent 30%),
+    linear-gradient(135deg, var(--app-bg), var(--app-bg-2) 52%, #090a0f);
+  color: var(--text-primary);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
 
-/* ── Scrollbar ── */
-::-webkit-scrollbar { width: 4px; }
+button, textarea, input { font: inherit; }
+button { background: transparent; border: 0; cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+::selection { background: rgba(154, 134, 255, 0.34); }
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); background-clip: content-box; }
 
-/* ── Sidebar Transition ── */
 .sidebar-enter-active,
-.sidebar-leave-active {
-  transition: width 0.2s ease, opacity 0.2s ease;
-  overflow: hidden;
-}
+.sidebar-leave-active { transition: width 220ms cubic-bezier(.2,.8,.2,1), opacity 180ms ease; overflow: hidden; }
 .sidebar-enter-from,
-.sidebar-leave-to {
-  width: 0;
-  opacity: 0;
-}
+.sidebar-leave-to { width: 0; opacity: 0; }
 .sidebar-enter-to,
-.sidebar-leave-from {
-  width: 240px;
-  opacity: 1;
-}
+.sidebar-leave-from { width: 248px; opacity: 1; }
 
-/* ── Drawer Transition ── */
 .drawer-enter-active,
-.drawer-leave-active {
-  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
+.drawer-leave-active { transition: transform 180ms cubic-bezier(.2,.8,.2,1), opacity 180ms ease; }
 .drawer-enter-from,
-.drawer-leave-to {
-  transform: translateX(100%);
-}
+.drawer-leave-to { transform: translateX(100%); opacity: 0; }
 .drawer-enter-to,
-.drawer-leave-from {
-  transform: translateX(0);
-}
+.drawer-leave-from { transform: translateX(0); opacity: 1; }
 
-/* ── Fade-in (toast, chip appear) ── */
-.animate-fade-in {
-  animation: fadeIn 0.2s ease;
-}
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
+.animate-fade-in { animation: fadeIn 0.2s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pulse-glow { 0%,100% { opacity: .45; transform: scale(.94); } 50% { opacity: 1; transform: scale(1.04); } }
+.animate-pulse-glow { animation: pulse-glow 1.5s ease-in-out infinite; }
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+.animate-shimmer { background: linear-gradient(90deg, var(--surface-raised) 25%, var(--surface-hover) 50%, var(--surface-raised) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
 
-/* ── Pulse Glow (Agent running) ── */
-@keyframes pulse-glow {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
-}
-.animate-pulse-glow {
-  animation: pulse-glow 1.5s ease-in-out infinite;
-}
-
-/* ── Slide In Right ── */
-@keyframes slideInRight {
-  from { transform: translateX(100%); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
-}
-.animate-slide-in-right {
-  animation: slideInRight 0.25s ease;
-}
-
-/* ── Shimmer (loading skeleton) ── */
-@keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
-.animate-shimmer {
-  background: linear-gradient(90deg, var(--surface-raised) 25%, var(--surface-hover) 50%, var(--surface-raised) 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
-}
-
-/* ── Prose Override ── */
-.prose {
-  max-width: none !important;
-}
+.prose { max-width: none !important; }
+.prose :where(a) { color: var(--brand-2); }
+.prose :where(code) { color: #d8d0ff; background: rgba(154,134,255,.13); border-radius: 6px; padding: 0.1em 0.35em; }

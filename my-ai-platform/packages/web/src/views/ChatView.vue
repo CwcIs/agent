@@ -371,84 +371,56 @@ onUnmounted(() => {
   abortController?.abort();
 });
 </script>
-
 <template>
-  <div class="flex-1 flex flex-col min-h-0">
-    <!-- 骞惰鎵ц鐘舵€佹í骞?-->
-    <div
-      v-if="streaming && runningAgents.length"
-      class="px-4 py-1.5 border-b shrink-0"
-      style="background: rgba(124,156,255,0.04); border-color: rgba(124,156,255,0.08)"
-    >
-      <div class="flex items-center gap-2 text-[11px]">
-        <span class="flex gap-1">
-          <span
-            v-for="(dot, dotIdx) in runningAgents.length"
-            :key="dotIdx"
-            class="w-1.5 h-1.5 rounded-full animate-pulse-glow"
-            :style="{ background: dotIdx === 0 ? 'var(--agent-review)' : 'var(--agent-brain)' }"
-          />
-        </span>
-        <span style="color: var(--text-muted)">{{ runningAgents.join("  路  ") }}</span>
-      </div>
+  <div class="chat-studio">
+    <div v-if="streaming && runningAgents.length" class="agent-activity">
+      <span class="activity-dots">
+        <i v-for="(_, dotIdx) in runningAgents" :key="dotIdx" :style="{ background: dotIdx === 0 ? 'var(--agent-review)' : 'var(--agent-brain)' }" />
+      </span>
+      <span>{{ runningAgents.join(" · ") }}</span>
     </div>
 
-    <!-- Stale 鐪嬮棬鐙?-->
-    <div
-      v-if="showStaleWarning && streaming"
-      class="px-4 py-2 border-b shrink-0"
-      style="background: rgba(255,209,102,0.06); border-color: rgba(255,209,102,0.1)"
-    >
-      <div class="flex items-center gap-2 text-[11px]" style="color: #FFD166">
-        <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.94-1.24 2.502-2.784a10.5 10.5 0 00-5.864-6.535M12 3.75A10.5 10.5 0 0117.364 18H6.636A10.5 10.5 0 0112 3.75z" />
-        </svg>
-        <span>连接可能已断开，超过 {{ STALE_TIMEOUT_MS / 1000 }} 秒没有收到响应</span>
-        <button class="ml-auto underline underline-offset-2 hover:opacity-80" style="color: #FFD166" @click="abortStream">停止并重试</button>
-      </div>
+    <div v-if="showStaleWarning && streaming" class="stale-warning">
+      <span>连接可能已断开，超过 {{ STALE_TIMEOUT_MS / 1000 }} 秒没有收到响应</span>
+      <button @click="abortStream">停止并重试</button>
     </div>
 
-    <!-- 娑堟伅鍒楄〃 -->
-    <div ref="messagesEl" class="flex-1 overflow-y-auto px-4 py-3 space-y-4" @scroll="onMessagesScroll">
-      <!-- 绌虹姸鎬?-->
-      <div v-if="!messages.length" class="flex flex-col items-center justify-center h-full gap-4 text-center">
-        <div class="w-12 h-12 rounded-2xl flex items-center justify-center" style="background: rgba(255,255,255,0.02)">
-          <svg class="w-6 h-6" style="color: var(--text-muted); opacity: 0.3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-          </svg>
+    <div ref="messagesEl" class="message-canvas" @scroll="onMessagesScroll">
+      <section v-if="!messages.length" class="empty-hero">
+        <div class="hero-orb">✦</div>
+        <p class="hero-kicker">AI Thought Studio</p>
+        <h1>{{ greeting }}，今天先捕捉哪一个想法？</h1>
+        <p class="hero-copy">丢进一个碎片。我会帮你保存、连接旧笔记、挑战假设，或扩展成新的方向。</p>
+        <div class="hero-actions">
+          <button v-for="cmd in COMMANDS" :key="cmd.trigger" :style="{ borderColor: cmd.border, color: cmd.color, background: cmd.bg }" @click="insertCommand(cmd.trigger)">
+            {{ cmd.trigger }} · {{ cmd.desc }}
+          </button>
         </div>
-        <div>
-          <p class="text-sm font-medium" style="color: var(--text-main)">{{ greeting }}，今天你想捕捉什么？</p>
-          <p class="text-xs mt-1" style="color: var(--text-muted)">你可以丢进一个碎片想法，或让 AI 帮你挑战、联想、合成</p>
+        <div class="hero-grid">
+          <div>
+            <strong>Capture</strong>
+            <span>把碎片想法先收进来</span>
+          </div>
+          <div>
+            <strong>Review</strong>
+            <span>找出假设、漏洞和风险</span>
+          </div>
+          <div>
+            <strong>Brain</strong>
+            <span>联想相邻概念与可能性</span>
+          </div>
         </div>
-        <div class="flex gap-2">
-          <button
-            v-for="cmd in COMMANDS"
-            :key="cmd.trigger"
-            class="text-[11px] px-3 py-1.5 rounded-full border transition-all hover:brightness-110"
-            :style="{
-              borderColor: cmd.border,
-              color: cmd.color,
-              background: cmd.bg,
-            }"
-            @click="insertCommand(cmd.trigger)"
-          >{{ cmd.trigger }}</button>
-        </div>
-      </div>
+      </section>
 
-      <!-- 娑堟伅娓叉煋 -->
       <template v-for="(msg, i) in messages" :key="i">
-        <!-- Agent 鍒囨崲鍒嗛殧鏉?-->
         <AgentDivider
           v-if="msg.isSwitchBanner"
           :agent-id="msg.agentId || 'knowledge'"
           :label="TAG_LABEL[msg.agentId || ''] || msg.agentId || 'Knowledge'"
-          :verb="AGENT_VERB[msg.agentId || ''] || '姝ｅ湪澶勭悊'"
+          :verb="AGENT_VERB[msg.agentId || ''] || '正在处理'"
           :verdict="i === messages.length - 1 ? currentVerdict : null"
           :verdict-warning="i === messages.length - 1 ? currentVerdictReason : null"
         />
-
-        <!-- 鏅€氭秷鎭紙鏂囨。鍧楅鏍硷級 -->
         <ThoughtBlock
           v-else
           :role="msg.role"
@@ -462,24 +434,8 @@ onUnmounted(() => {
       </template>
     </div>
 
-    <!-- 鍥炲埌搴曢儴娴挳 -->
-    <div
-      v-if="userScrolledUp && streaming"
-      class="flex justify-center -mt-2 pb-1 shrink-0"
-    >
-      <button
-        class="px-3 py-1 rounded-full border text-[11px] transition-all hover:brightness-110 flex items-center gap-1"
-        style="background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.06); color: var(--text-muted)"
-        @click="scrollBottom(true)"
-      >
-        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7-7-7" />
-        </svg>
-        鍥炲埌搴曢儴
-      </button>
-    </div>
+    <button v-if="userScrolledUp && streaming" class="scroll-bottom" @click="scrollBottom(true)">回到底部</button>
 
-    <!-- Agent Trace Bar (handoff chain) -->
     <AgentTraceBar
       v-if="handoffSteps.length || currentVerdict"
       :steps="handoffSteps"
@@ -498,7 +454,7 @@ onUnmounted(() => {
       @toggle="toggleTrace"
       @reset="resetToGlobalTrace"
     />
-    <!-- Thought Composer -->
+
     <ThoughtComposer
       v-model:input="input"
       v-model:streaming="streaming"
@@ -509,3 +465,96 @@ onUnmounted(() => {
   </div>
 </template>
 
+<style scoped>
+.chat-studio {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.message-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 34px 0 22px;
+}
+
+.agent-activity,
+.stale-warning {
+  width: min(760px, calc(100% - 32px));
+  margin: 12px auto 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-secondary);
+  background: rgba(255,255,255,0.04);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.activity-dots { display: flex; gap: 4px; }
+.activity-dots i { width: 7px; height: 7px; border-radius: 999px; animation: pulse-glow 1.4s ease-in-out infinite; }
+.stale-warning { color: var(--color-warning); border-color: rgba(255,213,106,.20); background: rgba(255,213,106,.06); }
+.stale-warning button { margin-left: auto; color: var(--color-warning); text-decoration: underline; text-underline-offset: 3px; }
+
+.empty-hero {
+  min-height: 100%;
+  width: min(820px, calc(100% - 32px));
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 48px 0 130px;
+}
+
+.hero-orb {
+  width: 58px;
+  height: 58px;
+  border-radius: 22px;
+  display: grid;
+  place-items: center;
+  color: white;
+  background: linear-gradient(135deg, var(--brand), var(--brand-2));
+  box-shadow: 0 24px 70px rgba(154,134,255,.28);
+  margin-bottom: 18px;
+}
+.hero-kicker { margin: 0 0 8px; color: var(--brand-2); font-size: 11px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+.empty-hero h1 { margin: 0; max-width: 720px; color: var(--text-primary); font-size: clamp(30px, 5vw, 56px); line-height: 1.04; letter-spacing: -0.065em; }
+.hero-copy { max-width: 560px; margin: 18px auto 0; color: var(--text-secondary); font-size: 15px; line-height: 1.75; }
+.hero-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 26px; }
+.hero-actions button { border: 1px solid; border-radius: 999px; padding: 9px 13px; font-size: 12px; transition: 160ms ease; }
+.hero-actions button:hover { transform: translateY(-1px); filter: brightness(1.12); }
+.hero-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; width: min(680px, 100%); margin-top: 30px; }
+.hero-grid div { border: 1px solid var(--border-subtle); border-radius: 18px; background: rgba(255,255,255,.035); padding: 16px; text-align: left; }
+.hero-grid strong { display: block; color: var(--text-primary); font-size: 13px; margin-bottom: 5px; }
+.hero-grid span { color: var(--text-tertiary); font-size: 12px; line-height: 1.5; }
+
+.scroll-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: 132px;
+  transform: translateX(-50%);
+  z-index: 5;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: rgba(20,22,31,.86);
+  color: var(--text-secondary);
+  padding: 8px 12px;
+  font-size: 12px;
+  box-shadow: 0 16px 50px rgba(0,0,0,.24);
+}
+
+@media (max-width: 740px) {
+  .message-canvas { padding-top: 22px; }
+  .hero-grid { grid-template-columns: 1fr; }
+  .empty-hero h1 { font-size: 34px; }
+}
+</style>

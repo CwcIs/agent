@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, provide, onMounted, onUnmounted } from "vue";
 import AppShell from "./components/AppShell.vue";
 import LeftRail from "./components/LeftRail.vue";
@@ -77,45 +77,45 @@ function handleGraphSelectNote(noteId: string) {
   }).catch(() => {});
 }
 
-// ── Global Keyboard Shortcuts ──
+// 鈹€鈹€ Global Keyboard Shortcuts 鈹€鈹€
 function onKeydown(e: KeyboardEvent) {
-  // Ctrl+/ — focus chat input
+  // Ctrl+/ focus chat input
   if (e.ctrlKey && e.key === "/") {
     e.preventDefault();
     (document.querySelector(".chat-input") as HTMLTextAreaElement)?.focus();
     return;
   }
-  // Ctrl+K — focus note search
+  // Ctrl+K focus note search
   if (e.ctrlKey && e.key === "k") {
     e.preventDefault();
     noteListRef.value?.focusSearch();
     return;
   }
-  // Ctrl+Shift+T — toggle Trace Console
+  // Ctrl+Shift+T toggle Trace Console
   if (e.ctrlKey && e.shiftKey && e.key === "T") {
     e.preventDefault();
     showTraceConsole.value = !showTraceConsole.value;
     return;
   }
-  // Ctrl+Shift+G — toggle GraphView
+  // Ctrl+Shift+G toggle GraphView
   if (e.ctrlKey && e.shiftKey && e.key === "G") {
     e.preventDefault();
     showGraphView.value = !showGraphView.value;
     return;
   }
-  // Ctrl+Shift+P — toggle ProfileView
+  // Ctrl+Shift+P toggle ProfileView
   if (e.ctrlKey && e.shiftKey && e.key === "P") {
     e.preventDefault();
     showProfileView.value = !showProfileView.value;
     return;
   }
-  // Ctrl+Shift+A — toggle AdminView
+  // Ctrl+Shift+A toggle AdminView
   if (e.ctrlKey && e.shiftKey && e.key === "A") {
     e.preventDefault();
     showAdminView.value = !showAdminView.value;
     return;
   }
-  // Escape — close drawer or overlays
+  // Escape close drawer or overlays
   if (e.key === "Escape") {
     if (showTraceConsole.value) { showTraceConsole.value = false; return; }
     if (showGraphView.value) { showGraphView.value = false; return; }
@@ -222,7 +222,7 @@ provide("toast", toast);
   <div v-else-if="showProfileView" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
     <div class="flex items-center justify-between px-4 py-2 border-b shrink-0" style="border-color: var(--border-subtle)">
       <span class="text-xs" style="color: var(--text-muted)">Knowledge Profile</span>
-      <button class="text-xs px-2 py-1 rounded hover:brightness-110" style="color: var(--text-tertiary)" @click="showProfileView = false">✕ Close</button>
+      <button class="text-xs px-2 py-1 rounded hover:brightness-110" style="color: var(--text-tertiary)" @click="showProfileView = false">Close</button>
     </div>
     <ProfileView />
   </div>
@@ -231,7 +231,7 @@ provide("toast", toast);
   <div v-else-if="showAdminView" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
     <div class="flex items-center justify-between px-4 py-2 border-b shrink-0" style="border-color: var(--border-subtle)">
       <span class="text-xs" style="color: var(--text-muted)">Admin Panel</span>
-      <button class="text-xs px-2 py-1 rounded hover:brightness-110" style="color: var(--text-tertiary)" @click="showAdminView = false">✕ Close</button>
+      <button class="text-xs px-2 py-1 rounded hover:brightness-110" style="color: var(--text-tertiary)" @click="showAdminView = false">Close</button>
     </div>
     <AdminView />
   </div>
@@ -316,3 +316,4 @@ provide("toast", toast);
   <!-- Global Toast -->
   <ToastProvider ref="toastRef" />
 </template>
+

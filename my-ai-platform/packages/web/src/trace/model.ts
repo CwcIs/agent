@@ -99,13 +99,31 @@ export interface TraceDetail {
   };
 }
 
+export const AGENT_META: Record<string, { label: string; role: string; color: string }> = {
+  knowledge: { label: "Knowledge", role: "整理与检索", color: "#7c9cff" },
+  review: { label: "Review", role: "质疑与校验", color: "#ffb86b" },
+  brain: { label: "Brain", role: "联想与扩展", color: "#b88cff" },
+  router: { label: "Router", role: "链路调度", color: "#6dd6c0" },
+  user: { label: "User", role: "原始输入", color: "#aab4c3" },
+};
+
+export function agentMeta(agentId: string) {
+  return AGENT_META[agentId] || {
+    label: agentId || "System",
+    role: "执行节点",
+    color: "#aab4c3",
+  };
+}
+
 export function formatLatency(ms: number): string {
+  if (!ms) return "—";
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${(ms / 60_000).toFixed(1)}m`;
 }
 
 export function formatCost(usd: number): string {
+  if (!usd) return "$0";
   if (usd < 0.001) return "< $0.001";
   return `$${usd.toFixed(4)}`;
 }
@@ -124,65 +142,116 @@ export function formatTraceTime(timestamp: string): string {
 
 export function trustLabel(status: TrustStatus): string {
   return {
-    verified: "链路已校验",
-    degraded: "链路有错误",
+    verified: "链路可信",
+    degraded: "链路有告警",
     partial: "证据不完整",
-    compromised: "校验失败",
+    compromised: "链路校验失败",
   }[status];
+}
+
+export function verdictLabel(verdict: string): string {
+  const labels: Record<string, string> = {
+    natural_end: "自然完成",
+    missing_handoff: "疑似缺少接力",
+    loop_detected: "检测到循环",
+    max_depth_reached: "达到链路上限",
+    incomplete: "执行未完成",
+    legacy: "历史记录",
+  };
+  return labels[verdict] || verdict || "未知结果";
+}
+
+export function verdictDescription(verdict: string): string {
+  const descriptions: Record<string, string> = {
+    natural_end: "Agent 已给出完整答复，链路正常结束。",
+    missing_handoff: "输出可能暗示需要其他 Agent，但没有明确写出 @agent 接力指令。",
+    loop_detected: "相同 Agent 接力路径重复出现，系统已主动终止。",
+    max_depth_reached: "执行达到安全深度上限，系统已停止继续接力。",
+    incomplete: "缺少结束事件，执行可能被中断或仍在进行。",
+    legacy: "仅保留了模型调用记录，无法还原完整执行链路。",
+  };
+  return descriptions[verdict] || "查看时间线了解本次执行如何结束。";
 }
 
 export function eventLabel(type: string): string {
   const labels: Record<string, string> = {
     trace_start: "请求开始",
-    input_received: "收到输入",
-    context_assembled: "上下文组装",
+    input_received: "接收输入",
+    context_assembled: "组装上下文",
     agent_start: "Agent 开始",
     llm_call: "模型调用",
-    tool_start: "工具开始",
-    tool_end: "工具结束",
+    tool_start: "调用工具",
+    tool_end: "工具返回",
     retrieval_completed: "检索完成",
     citation_verified: "引用已验证",
-    handoff: "Agent 交接",
-    warning: "链路警告",
+    handoff: "Agent 接力",
+    warning: "链路告警",
     verdict: "终止判定",
-    agent_end: "Agent 结束",
+    agent_end: "Agent 完成",
     error: "执行错误",
     trace_end: "请求结束",
   };
   return labels[type] || type;
 }
 
+export function eventTone(event: TraceEvent): "neutral" | "info" | "success" | "warning" | "danger" {
+  if (event.status === "error" || event.event_type === "error") return "danger";
+  if (event.status === "warning" || event.event_type === "warning") return "warning";
+  if (["trace_end", "agent_end", "citation_verified"].includes(event.event_type)) return "success";
+  if (["llm_call", "tool_start", "tool_end", "retrieval_completed", "handoff", "verdict"].includes(event.event_type)) return "info";
+  return "neutral";
+}
+
 export function eventSummary(event: TraceEvent): string {
   const payload = event.payload || {};
   switch (event.event_type) {
+    case "trace_start":
+      return "已创建本次执行链路，并开始记录事件。";
     case "input_received":
-      return `${payload.char_count || 0} 字符 · SHA ${String(payload.content_sha256 || "").slice(0, 10)}`;
+      return `收到 ${payload.char_count || 0} 个字符的用户输入`;
     case "context_assembled":
-      return `${payload.history_message_count || 0} 条历史 → ${payload.final_message_count || 0} 条上下文`;
+      return `从 ${payload.history_message_count || 0} 条历史消息组装为 ${payload.final_message_count || 0} 条有效上下文`;
     case "agent_start":
-      return `${event.agent_id} · depth ${payload.depth ?? "parallel"}`;
+      return `${agentMeta(event.agent_id).label} 开始处理${payload.depth !== undefined ? `，链路深度 ${payload.depth}` : ""}`;
     case "llm_call":
-      return `${event.name} · ${payload.input_tokens || 0}+${payload.output_tokens || 0} tokens · ${formatLatency(payload.latency_ms || 0)}`;
+      return `${event.name || "模型"} · ${(payload.input_tokens || 0).toLocaleString()} 输入 / ${(payload.output_tokens || 0).toLocaleString()} 输出 Token · ${formatLatency(payload.latency_ms || 0)}`;
     case "tool_start":
-      return event.name;
+      return `${agentMeta(event.agent_id).label} 请求调用 ${event.name || "工具"}`;
     case "tool_end":
-      return `${event.name} · ${event.status}`;
+      return `${event.name || "工具"} 已${event.status === "error" ? "失败" : "返回结果"}`;
     case "retrieval_completed":
-      return `${payload.candidate_count || 0} 个候选 · 选中 ${payload.selected?.length || 0}`;
+      return `从 ${payload.candidate_count || 0} 个候选中选中 ${payload.selected?.length || 0} 条相关笔记`;
     case "handoff":
-      return `${payload.from_agent || event.parent_agent_id} → ${payload.to_agent || event.agent_id} · ${event.name}`;
+      return `${agentMeta(payload.from_agent || event.parent_agent_id).label} → ${agentMeta(payload.to_agent || event.agent_id).label}${event.name ? ` · ${event.name}` : ""}`;
     case "citation_verified":
-      return `${payload.note_id || event.name} · ${payload.method || "exact"}`;
+      return `笔记 ${payload.note_id || event.name} 已通过 ${payload.method || "精确 ID"} 校验`;
     case "verdict":
-      return `${event.name} · ${payload.should_terminate ? "结束" : "继续"}`;
+      return `${verdictLabel(event.name)} · ${payload.should_terminate ? "结束链路" : "继续执行"}`;
     case "agent_end":
-      return `${event.agent_id} · ${payload.output_chars || 0} 字符 · ${payload.tool_call_count || 0} 次工具`;
+      return `${agentMeta(event.agent_id).label} 输出 ${payload.output_chars || 0} 字符，使用 ${payload.tool_call_count || 0} 次工具`;
     case "trace_end":
-      return payload.verdict || event.name;
+      return verdictDescription(payload.verdict || event.name);
     case "error":
     case "warning":
       return payload.message || event.name;
     default:
-      return event.name || event.status;
+      return event.name || event.status || "事件已记录";
   }
+}
+
+export function importantEvents(events: TraceEvent[]): TraceEvent[] {
+  const important = new Set([
+    "agent_start",
+    "llm_call",
+    "tool_start",
+    "tool_end",
+    "retrieval_completed",
+    "handoff",
+    "warning",
+    "error",
+    "verdict",
+    "agent_end",
+    "trace_end",
+  ]);
+  return events.filter((event) => important.has(event.event_type));
 }

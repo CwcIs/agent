@@ -11,111 +11,66 @@ const props = defineProps<{
   smartBadges?: Array<{ type: string; label: string; priority: string }>;
 }>();
 
-const emit = defineEmits<{
-  toggleDigest: [];
-}>();
+const emit = defineEmits<{ toggleDigest: [] }>();
 
-const hasDigestHighlights = computed(() =>
-  (props.dailyTrendCount ?? 0) > 0 || (props.dailyAnomalyCount ?? 0) > 0 ||
-  (props.smartBadges?.length ?? 0) > 0
+const digestLabel = computed(() => {
+  const notes = props.dailyNoteCount ?? 0;
+  const themes = props.dailyTrendCount ?? 0;
+  if (!notes) return "No notes today";
+  return `${notes} notes · ${themes} themes`;
+});
+
+const hasHighlights = computed(() =>
+  (props.dailyTrendCount ?? 0) > 0 || (props.dailyAnomalyCount ?? 0) > 0 || (props.smartBadges?.length ?? 0) > 0
 );
 </script>
 
 <template>
-  <header class="top-status-bar">
+  <header class="topbar">
     <slot name="toggle" />
-
-    <div class="top-title">
-      <span class="eyebrow">AI Thought Studio</span>
-      <strong>Inbox</strong>
+    <div class="title-block">
+      <span>Studio</span>
+      <strong>Thinking Inbox</strong>
     </div>
 
-    <div class="flex-1" />
+    <div class="status-strip">
+      <span class="live-dot" :class="{ streaming }" />
+      <span>{{ streaming ? 'Agents working' : 'Connected' }}</span>
+    </div>
 
-    <button
-      v-if="dailyNoteCount || smartBadges?.length"
-      class="daily-badge"
-      :class="{ active: hasDigestHighlights }"
-      @click="emit('toggleDigest')"
-    >
-      <template v-if="dailyNoteCount">Today · {{ dailyNoteCount }} notes</template>
-      <template v-if="dailyTrendCount"> · {{ dailyTrendCount }} themes</template>
-      <template v-for="b in smartBadges?.filter(b => b.priority === 'high')" :key="b.type">
-        · {{ b.label }}
-      </template>
+    <div class="topbar-spacer" />
+
+    <button class="digest-button" :class="{ active: hasHighlights }" @click="emit('toggleDigest')">
+      <span>Daily Review</span>
+      <strong>{{ digestLabel }}</strong>
     </button>
-
-    <span class="status-dot" :class="{ streaming }" />
-    <span class="cmd-hint">⌘K</span>
+    <kbd class="cmd-key">⌘K</kbd>
   </header>
 </template>
 
 <style scoped>
-.top-status-bar {
-  height: 58px;
+.topbar {
+  height: 72px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 22px;
+  gap: 14px;
+  padding: 0 28px;
   border-bottom: 1px solid var(--border-subtle);
-  background: rgba(13,14,20,0.72);
-  backdrop-filter: blur(22px);
-  flex-shrink: 0;
+  background: rgba(11, 12, 18, 0.58);
+  backdrop-filter: blur(24px);
 }
-
-.top-title {
-  display: grid;
-  gap: 1px;
-}
-
-.eyebrow {
-  color: var(--text-tertiary);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.top-title strong {
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.daily-badge,
-.cmd-hint {
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  background: rgba(255,255,255,0.04);
-  color: var(--text-tertiary);
-  padding: 7px 10px;
-  font-size: 11px;
-}
-
-.daily-badge.active {
-  background: var(--brand-soft);
-  border-color: var(--brand-border);
-  color: var(--brand);
-}
-
-.status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--color-success);
-  box-shadow: 0 0 16px rgba(112,224,163,0.45);
-}
-
-.status-dot.streaming {
-  background: var(--agent-knowledge);
-  box-shadow: 0 0 16px rgba(110,168,255,0.55);
-}
-
-.cmd-hint {
-  display: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-@media (min-width: 1024px) {
-  .cmd-hint { display: inline-block; }
-}
+.title-block { display: grid; gap: 2px; }
+.title-block span { color: var(--text-tertiary); font-size: 10px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
+.title-block strong { color: var(--text-primary); font-size: 17px; letter-spacing: -0.035em; }
+.status-strip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border-subtle); border-radius: 999px; padding: 7px 10px; color: var(--text-secondary); font-size: 11px; background: rgba(255,255,255,0.035); }
+.live-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--color-success); box-shadow: 0 0 18px rgba(119,228,173,.48); }
+.live-dot.streaming { background: var(--agent-knowledge); box-shadow: 0 0 18px rgba(121,174,255,.56); }
+.topbar-spacer { flex: 1; }
+.digest-button { min-width: 160px; display: grid; gap: 1px; text-align: left; border: 1px solid var(--border-subtle); border-radius: 16px; padding: 9px 12px; color: var(--text-secondary); background: rgba(255,255,255,0.04); transition: 160ms ease; }
+.digest-button:hover, .digest-button.active { border-color: var(--brand-border); background: var(--brand-soft); }
+.digest-button span { color: var(--text-tertiary); font-size: 10px; }
+.digest-button strong { color: var(--text-primary); font-size: 12px; }
+.cmd-key { border: 1px solid var(--border-subtle); border-radius: 11px; padding: 7px 9px; color: var(--text-tertiary); background: rgba(255,255,255,0.035); font-size: 11px; }
+@media (max-width: 820px) { .status-strip, .digest-button { display: none; } .topbar { padding: 0 16px; } }
 </style>

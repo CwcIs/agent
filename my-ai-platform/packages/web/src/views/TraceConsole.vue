@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import {
   agentMeta,
+  buildTraceSpans,
   eventLabel,
   eventSummary,
   eventTone,
@@ -13,7 +14,7 @@ import {
   verdictDescription,
   verdictLabel,
 } from "../trace/model";
-import type { TraceDetail, TraceEvent, TraceSummary, TrustStatus } from "../trace/model";
+import type { TraceDetail, TraceEvent, TraceSpan, TraceSummary, TrustStatus } from "../trace/model";
 
 type DetailTab = "overview" | "timeline" | "evidence" | "raw";
 
@@ -27,6 +28,7 @@ const filterAgent = ref("");
 const filterStatus = ref("");
 const filterText = ref("");
 const activeTab = ref<DetailTab>("overview");
+const selectedSpan = ref<TraceSpan | null>(null);
 
 const detailTabs: Array<{ id: DetailTab; label: string }> = [
   { id: "overview", label: "执行摘要" },
@@ -81,6 +83,39 @@ const llmEvents = computed(() =>
   selectedTrace.value?.events.filter((event) => event.event_type === "llm_call") || [],
 );
 
+const flowSpans = computed(() => selectedTrace.value ? buildTraceSpans(selectedTrace.value.events) : []);
+
+const flowStart = computed(() => {
+  return flowSpans.value[0]?.startMs || 0;
+});
+
+const flowDuration = computed(() => {
+  if (!flowSpans.value.length) return 1;
+  const end = Math.max(...flowSpans.value.map((span) => span.startMs + span.durationMs));
+  return Math.max(1, end - flowStart.value);
+});
+
+const slowestSpan = computed(() => [...flowSpans.value].sort((a, b) => b.durationMs - a.durationMs)[0] || null);
+
+const issueCount = computed(() => selectedTrace.value
+  ? selectedTrace.value.trust.error_count + selectedTrace.value.trust.warning_count
+    + selectedTrace.value.trust.structural_issues.length
+    + selectedTrace.value.trust.missing_required_events.length
+  : 0,
+);
+
+function spanOffset(span: TraceSpan): number {
+  return Math.max(0, Math.min(94, ((span.startMs - flowStart.value) / flowDuration.value) * 100));
+}
+
+function spanWidth(span: TraceSpan): number {
+  return Math.max(1.8, Math.min(100 - spanOffset(span), (span.durationMs / flowDuration.value) * 100));
+}
+
+function selectSpan(span: TraceSpan) {
+  selectedSpan.value = span;
+}
+
 function trustClass(status: TrustStatus): string {
   return `trust-${status}`;
 }
@@ -119,6 +154,7 @@ async function selectTrace(traceId: string) {
   traceLoading.value = true;
   loadError.value = "";
   activeTab.value = "overview";
+  selectedSpan.value = null;
   try {
     const response = await fetch(`/traces/${traceId}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -175,6 +211,12 @@ onMounted(refreshList);
         </div>
 
         <div class="filters">
+          <div class="status-segments" aria-label="按链路状态筛选">
+            <button :class="{ active: !filterStatus }" @click="filterStatus = ''">全部 <b>{{ traces.length }}</b></button>
+            <button :class="{ active: filterStatus === 'verified' }" @click="filterStatus = 'verified'">正常 <b>{{ trustCounts.verified }}</b></button>
+            <button :class="{ active: filterStatus === 'degraded' }" @click="filterStatus = 'degraded'">告警 <b>{{ trustCounts.degraded }}</b></button>
+            <button :class="{ active: filterStatus === 'partial' }" @click="filterStatus = 'partial'">不完整 <b>{{ trustCounts.partial }}</b></button>
+          </div>
           <label class="search-field">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
             <input v-model="filterText" placeholder="搜索 ID 或 Agent" />
@@ -184,13 +226,7 @@ onMounted(refreshList);
               <option value="">全部 Agent</option>
               <option v-for="agent in uniqueAgents" :key="agent" :value="agent">{{ agentMeta(agent).label }}</option>
             </select>
-            <select v-model="filterStatus">
-              <option value="">全部状态</option>
-              <option value="verified">链路可信</option>
-              <option value="degraded">有告警</option>
-              <option value="partial">不完整</option>
-              <option value="compromised">校验失败</option>
-            </select>
+            <button class="clear-filter" :disabled="!filterAgent && !filterText && !filterStatus" @click="filterAgent = ''; filterText = ''; filterStatus = ''">清除筛选</button>
           </div>
         </div>
 
@@ -278,6 +314,69 @@ onMounted(refreshList);
 
           <div class="tab-content">
             <template v-if="activeTab === 'overview'">
+              <section class="diagnosis-strip" :class="issueCount ? 'has-issues' : 'healthy'">
+                <div class="diagnosis-icon">{{ issueCount ? '!' : '✓' }}</div>
+                <div>
+                  <span class="section-kicker">QUICK READ</span>
+                  <strong>{{ issueCount ? `发现 ${issueCount} 个需要关注的信号` : '这条链路执行完整，未发现结构异常' }}</strong>
+                  <p v-if="slowestSpan">主要耗时在 {{ agentMeta(slowestSpan.agentId).label }} 的 {{ slowestSpan.label }}，约 {{ formatLatency(slowestSpan.durationMs) }}。</p>
+                  <p v-else>{{ verdictDescription(selectedTrace.summary.verdict) }}</p>
+                </div>
+                <button v-if="issueCount" @click="activeTab = 'evidence'">查看问题 →</button>
+              </section>
+
+              <section class="content-card flow-card">
+                <div class="card-heading">
+                  <div><span class="section-kicker">EXECUTION FLOW</span><h3>链路瀑布图</h3></div>
+                  <div class="flow-legend"><span><i class="model" />模型</span><span><i class="tool" />工具</span><span><i class="handoff" />接力</span></div>
+                </div>
+                <div class="flow-workspace">
+                  <div class="waterfall">
+                    <div class="waterfall-axis"><span>开始</span><span>25%</span><span>50%</span><span>75%</span><span>{{ formatLatency(flowDuration) }}</span></div>
+                    <button
+                      v-for="span in flowSpans"
+                      :key="span.id"
+                      class="waterfall-row"
+                      :class="{ active: selectedSpan?.id === span.id, error: span.status === 'error' }"
+                      @click="selectSpan(span)"
+                    >
+                      <span class="waterfall-label">
+                        <b :style="{ color: agentMeta(span.agentId).color }">{{ agentMeta(span.agentId).label }}</b>
+                        <span>{{ span.label }}</span>
+                      </span>
+                      <span class="waterfall-track">
+                        <i
+                          :class="span.kind"
+                          :style="{ left: `${spanOffset(span)}%`, width: `${spanWidth(span)}%`, '--agent-color': agentMeta(span.agentId).color }"
+                        />
+                      </span>
+                      <span class="waterfall-time">{{ span.durationMs > 1 ? formatLatency(span.durationMs) : `#${span.event.sequence}` }}</span>
+                    </button>
+                  </div>
+
+                  <aside class="event-inspector">
+                    <template v-if="selectedSpan">
+                      <div class="inspector-heading">
+                        <span class="event-kind">{{ selectedSpan.kind.toUpperCase() }}</span>
+                        <button aria-label="关闭事件详情" @click="selectedSpan = null">×</button>
+                      </div>
+                      <h4>{{ selectedSpan.label }}</h4>
+                      <p>{{ eventSummary(selectedSpan.endEvent || selectedSpan.event) }}</p>
+                      <dl>
+                        <div><dt>Agent</dt><dd :style="{ color: agentMeta(selectedSpan.agentId).color }">{{ agentMeta(selectedSpan.agentId).label }}</dd></div>
+                        <div><dt>耗时</dt><dd>{{ formatLatency(selectedSpan.durationMs) }}</dd></div>
+                        <div><dt>状态</dt><dd>{{ selectedSpan.status || 'ok' }}</dd></div>
+                        <div><dt>事件</dt><dd>#{{ selectedSpan.event.sequence }}<template v-if="selectedSpan.endEvent"> → #{{ selectedSpan.endEvent.sequence }}</template></dd></div>
+                      </dl>
+                      <button class="inspect-raw" @click="activeTab = 'timeline'">在完整时间线中查看 →</button>
+                    </template>
+                    <template v-else>
+                      <div class="inspector-empty"><span>↖</span><strong>选择一个步骤</strong><p>点击左侧任意条带，查看该模型、工具或接力事件的上下文。</p></div>
+                    </template>
+                  </aside>
+                </div>
+              </section>
+
               <div class="overview-grid">
                 <section class="content-card execution-card">
                   <div class="card-heading"><div><span class="section-kicker">AGENT PATH</span><h3>执行路径</h3></div><span>{{ selectedTrace.summary.handoff_count }} 次接力</span></div>
@@ -430,4 +529,9 @@ onMounted(refreshList);
 .trust-verified{color:#70e0a3;background:rgba(112,224,163,.1)}.trust-degraded{color:#f5b942;background:rgba(245,185,66,.1)}.trust-partial{color:#aab4c3;background:rgba(148,163,184,.1)}.trust-compromised{color:#f27b7b;background:rgba(239,68,68,.1)}@keyframes spin{to{transform:rotate(360deg)}}
 @media(max-width:1100px){.metric-grid{grid-template-columns:repeat(3,1fr)}.overview-grid,.evidence-grid{grid-template-columns:1fr}.runs-panel{width:290px;min-width:290px}.storyline{grid-template-columns:1fr}}
 @media(max-width:760px){.console-header{min-height:64px;padding:0 14px}.header-health{display:none}.runs-panel{width:100%;min-width:0;max-height:240px;border-right:0;border-bottom:1px solid rgba(255,255,255,.075)}.console-body{flex-direction:column}.detail-hero{padding:20px;flex-direction:column}.outcome-card{width:auto}.metric-grid{grid-template-columns:repeat(2,1fr);padding:0 20px 18px}.detail-tabs{padding:0 20px;gap:14px}.tab-content{padding:16px 20px 28px}.model-row{grid-template-columns:minmax(120px,1fr) 55px 55px 60px}.model-row>span:last-child{display:none}}
+.diagnosis-strip{display:flex;align-items:center;gap:12px;margin-bottom:12px;border:1px solid rgba(112,224,163,.16);border-radius:14px;padding:13px 15px;background:linear-gradient(90deg,rgba(112,224,163,.07),rgba(112,224,163,.025))}.diagnosis-strip.has-issues{border-color:rgba(245,185,66,.2);background:linear-gradient(90deg,rgba(245,185,66,.08),rgba(245,185,66,.02))}.diagnosis-icon{display:grid;width:30px;height:30px;flex-shrink:0;place-items:center;border-radius:9px;color:#76e2a5;background:rgba(112,224,163,.12);font-size:13px;font-weight:800}.has-issues .diagnosis-icon{color:#f5c65f;background:rgba(245,185,66,.12)}.diagnosis-strip>div:nth-child(2){min-width:0;flex:1}.diagnosis-strip strong{display:block;margin-top:3px;font-size:11px}.diagnosis-strip p{margin-top:3px;color:var(--text-tertiary);font-size:9px;line-height:1.45}.diagnosis-strip button{border:1px solid rgba(245,185,66,.18);border-radius:8px;padding:7px 9px;color:#e8c875;background:rgba(245,185,66,.06);font-size:9px}
+.flow-card{margin-bottom:12px}.flow-legend{display:flex;gap:11px;color:var(--text-tertiary);font-size:8px}.flow-legend span{display:flex;align-items:center;gap:4px}.flow-legend i{width:12px;height:3px;border-radius:3px;background:#7c9cff}.flow-legend i.tool{background:#6dd6c0}.flow-legend i.handoff{background:#b88cff}.flow-workspace{display:grid;grid-template-columns:minmax(460px,1fr) 250px;border-top:1px solid rgba(255,255,255,.055)}.waterfall{min-width:0;padding:10px 12px 14px}.waterfall-axis{display:grid;grid-template-columns:repeat(5,1fr);margin:0 55px 7px 164px;color:#4f596b;font-size:7px}.waterfall-axis span:not(:first-child){text-align:right}.waterfall-row{display:grid;width:100%;grid-template-columns:152px minmax(200px,1fr) 45px;gap:10px;align-items:center;min-height:34px;border-radius:7px;padding:0 5px;text-align:left;transition:.14s ease}.waterfall-row:hover,.waterfall-row.active{background:rgba(124,156,255,.07)}.waterfall-row.active{box-shadow:inset 2px 0 #7c9cff}.waterfall-label{display:flex;min-width:0;align-items:center;gap:7px}.waterfall-label b{width:62px;overflow:hidden;font-size:8px;text-overflow:ellipsis;white-space:nowrap}.waterfall-label>span{overflow:hidden;color:var(--text-secondary);font-size:9px;text-overflow:ellipsis;white-space:nowrap}.waterfall-track{position:relative;height:24px;border-left:1px solid rgba(255,255,255,.08);border-right:1px solid rgba(255,255,255,.04);background:repeating-linear-gradient(90deg,transparent,transparent calc(25% - 1px),rgba(255,255,255,.045) 25%)}.waterfall-track i{position:absolute;top:8px;height:8px;min-width:5px;border-radius:3px;background:var(--agent-color);box-shadow:0 0 12px color-mix(in srgb,var(--agent-color) 25%,transparent);opacity:.82}.waterfall-track i.tool,.waterfall-track i.retrieval{height:6px;top:9px;background:#6dd6c0}.waterfall-track i.handoff{height:10px;top:7px;background:#b88cff}.waterfall-row.error .waterfall-track i{background:#f27b7b}.waterfall-time{text-align:right;color:#687286;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:8px}
+.event-inspector{min-height:280px;border-left:1px solid rgba(255,255,255,.06);padding:15px;background:rgba(255,255,255,.015)}.inspector-heading{display:flex;align-items:center;justify-content:space-between}.event-kind{border-radius:5px;padding:3px 6px;color:#9bb0ff;background:rgba(124,156,255,.1);font-size:8px}.inspector-heading button{display:grid;width:23px;height:23px;place-items:center;border-radius:6px;color:var(--text-tertiary);font-size:15px}.event-inspector h4{margin-top:13px;font-size:12px}.event-inspector>p{margin-top:7px;color:var(--text-secondary);font-size:9px;line-height:1.55}.event-inspector dl{margin-top:14px;border-top:1px solid rgba(255,255,255,.06)}.event-inspector dl div{display:flex;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,.05);padding:8px 0;font-size:8px}.event-inspector dt{color:var(--text-tertiary)}.event-inspector dd{color:var(--text-secondary)}.inspect-raw{margin-top:13px;color:#92a8ff;font-size:8px}.inspector-empty{display:flex;height:245px;align-items:center;justify-content:center;flex-direction:column;text-align:center}.inspector-empty>span{display:grid;width:32px;height:32px;place-items:center;border-radius:9px;color:#8298eb;background:rgba(124,156,255,.08);font-size:15px}.inspector-empty strong{margin-top:12px;font-size:10px}.inspector-empty p{max-width:180px;margin-top:6px;color:var(--text-tertiary);font-size:8px;line-height:1.55}
+.status-segments{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;margin-bottom:8px;border-radius:9px;padding:3px;background:rgba(255,255,255,.035)}.status-segments button{display:flex;height:27px;align-items:center;justify-content:center;gap:4px;border-radius:7px;color:var(--text-tertiary);font-size:8px}.status-segments button.active{color:#dce3f2;background:rgba(124,156,255,.12);box-shadow:0 1px 5px rgba(0,0,0,.2)}.status-segments b{color:#6d788b;font-size:7px}.clear-filter{height:31px;border:1px solid rgba(255,255,255,.075);border-radius:8px;color:var(--text-tertiary);font-size:8px}.clear-filter:not(:disabled):hover{color:#aebffb;border-color:rgba(124,156,255,.24)}.clear-filter:disabled{opacity:.35}
+@media(max-width:1100px){.flow-workspace{grid-template-columns:1fr}.event-inspector{min-height:0;border-top:1px solid rgba(255,255,255,.06);border-left:0}.inspector-empty{height:100px}}
 </style>

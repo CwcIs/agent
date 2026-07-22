@@ -34,6 +34,18 @@ export interface TraceEvent {
   created_at: string;
 }
 
+export interface TraceSpan {
+  id: string;
+  kind: "agent" | "llm" | "tool" | "retrieval" | "handoff" | "event";
+  label: string;
+  agentId: string;
+  startMs: number;
+  durationMs: number;
+  status: string;
+  event: TraceEvent;
+  endEvent?: TraceEvent;
+}
+
 export interface TraceTrust {
   status: TrustStatus;
   score: number;
@@ -254,4 +266,100 @@ export function importantEvents(events: TraceEvent[]): TraceEvent[] {
     "trace_end",
   ]);
   return events.filter((event) => important.has(event.event_type));
+}
+
+function eventTime(event: TraceEvent): number {
+  const normalized = event.created_at.includes("T")
+    ? event.created_at
+    : event.created_at.replace(" ", "T");
+  const value = new Date(normalized).getTime();
+  return Number.isFinite(value) ? value : 0;
+}
+
+/** Reconstruct user-facing spans from the append-only event ledger. */
+export function buildTraceSpans(events: TraceEvent[]): TraceSpan[] {
+  const starts = new Map<string, TraceEvent>();
+  const spans: TraceSpan[] = [];
+
+  const pairKey = (event: TraceEvent) => {
+    const callId = event.payload?.tool_call_id || event.payload?.call_id;
+    return callId || `${event.phase_trace_id}:${event.agent_id}:${event.name}`;
+  };
+
+  for (const event of events) {
+    if (event.event_type === "agent_start") {
+      starts.set(`agent:${event.phase_trace_id || event.agent_id}`, event);
+      continue;
+    }
+    if (event.event_type === "tool_start") {
+      starts.set(`tool:${pairKey(event)}`, event);
+      continue;
+    }
+
+    if (event.event_type === "agent_end") {
+      const key = `agent:${event.phase_trace_id || event.agent_id}`;
+      const start = starts.get(key) || event;
+      spans.push({
+        id: `agent:${event.id}`,
+        kind: "agent",
+        label: `${agentMeta(event.agent_id).label} 阶段`,
+        agentId: event.agent_id,
+        startMs: eventTime(start),
+        durationMs: Math.max(1, eventTime(event) - eventTime(start)),
+        status: event.status,
+        event: start,
+        endEvent: event,
+      });
+      starts.delete(key);
+      continue;
+    }
+
+    if (event.event_type === "tool_end") {
+      const key = `tool:${pairKey(event)}`;
+      const start = starts.get(key) || event;
+      spans.push({
+        id: `tool:${event.id}`,
+        kind: "tool",
+        label: event.name || "工具调用",
+        agentId: event.agent_id,
+        startMs: eventTime(start),
+        durationMs: Math.max(1, eventTime(event) - eventTime(start)),
+        status: event.status,
+        event: start,
+        endEvent: event,
+      });
+      starts.delete(key);
+      continue;
+    }
+
+    if (event.event_type === "llm_call") {
+      const duration = Math.max(1, Number(event.payload?.latency_ms || 1));
+      spans.push({
+        id: `llm:${event.id}`,
+        kind: "llm",
+        label: event.name || "模型调用",
+        agentId: event.agent_id,
+        startMs: Math.max(0, eventTime(event) - duration),
+        durationMs: duration,
+        status: event.status,
+        event,
+      });
+      continue;
+    }
+
+    if (["retrieval_completed", "handoff", "warning", "error", "verdict"].includes(event.event_type)) {
+      spans.push({
+        id: `event:${event.id}`,
+        kind: event.event_type === "retrieval_completed" ? "retrieval" : event.event_type === "handoff" ? "handoff" : "event",
+        label: eventLabel(event.event_type),
+        agentId: event.agent_id,
+        startMs: eventTime(event),
+        durationMs: 1,
+        status: event.status,
+        event,
+      });
+    }
+  }
+
+  return spans.sort((a, b) => a.startMs - b.startMs || b.durationMs - a.durationMs);
 }

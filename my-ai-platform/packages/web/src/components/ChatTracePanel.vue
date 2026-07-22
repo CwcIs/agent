@@ -3,12 +3,9 @@ import { computed } from "vue";
 import type { TraceData } from "../composables/useChatTrace";
 import {
   agentMeta,
-  eventLabel,
-  eventSummary,
-  eventTone,
+  buildTraceSpans,
   formatCost,
   formatLatency,
-  importantEvents,
   trustLabel,
   verdictDescription,
   verdictLabel,
@@ -24,9 +21,19 @@ const props = defineProps<{
 
 defineEmits<{ toggle: []; reset: [] }>();
 
-const visibleEvents = computed(() =>
-  props.traceData ? importantEvents(props.traceData.events).slice(0, 6) : [],
-);
+const visibleSpans = computed(() => props.traceData ? buildTraceSpans(props.traceData.events).slice(0, 8) : []);
+const spanStart = computed(() => visibleSpans.value[0]?.startMs || 0);
+const spanDuration = computed(() => {
+  if (!visibleSpans.value.length) return 1;
+  const end = Math.max(...visibleSpans.value.map((span) => span.startMs + span.durationMs));
+  return Math.max(1, end - spanStart.value);
+});
+
+function spanStyle(span: (typeof visibleSpans.value)[number]) {
+  const left = Math.max(0, Math.min(94, ((span.startMs - spanStart.value) / spanDuration.value) * 100));
+  const width = Math.max(2, Math.min(100 - left, (span.durationMs / spanDuration.value) * 100));
+  return { left: `${left}%`, width: `${width}%`, "--agent-color": agentMeta(span.agentId).color };
+}
 
 const flowLabel = computed(() => {
   if (!props.traceData?.agents.length) return "正在等待执行数据";
@@ -93,13 +100,13 @@ function trustClass(status: string): string {
           </template>
         </div>
 
-        <div class="mini-timeline">
-          <div class="timeline-heading"><span>关键过程</span><small>共 {{ traceData.events.length }} 个事件</small></div>
-          <div v-for="event in visibleEvents" :key="event.id" class="mini-event" :class="`tone-${eventTone(event)}`">
-            <span class="event-marker" />
-            <span class="event-number">{{ String(event.sequence).padStart(2, "0") }}</span>
-            <div><strong>{{ eventLabel(event.event_type) }}</strong><p>{{ eventSummary(event) }}</p></div>
-            <span v-if="event.agent_id" class="event-agent" :style="{ '--agent-color': agentMeta(event.agent_id).color }">{{ agentMeta(event.agent_id).label }}</span>
+        <div class="mini-waterfall">
+          <div class="timeline-heading"><span>执行链路</span><small>{{ visibleSpans.length }} 个关键步骤 · 共 {{ traceData.events.length }} 个事件</small></div>
+          <div class="mini-axis"><span>开始</span><span>{{ formatLatency(spanDuration) }}</span></div>
+          <div v-for="span in visibleSpans" :key="span.id" class="mini-span">
+            <span class="mini-span-label"><b :style="{ color: agentMeta(span.agentId).color }">{{ agentMeta(span.agentId).label }}</b>{{ span.label }}</span>
+            <span class="mini-span-track"><i :class="span.kind" :style="spanStyle(span)" /></span>
+            <span class="mini-span-time">{{ span.durationMs > 1 ? formatLatency(span.durationMs) : `#${span.event.sequence}` }}</span>
           </div>
         </div>
 
@@ -128,7 +135,7 @@ function trustClass(status: string): string {
 .trace-expanded { border-top: 1px solid rgba(255,255,255,.07); padding: 14px; }
 .outcome-row { display: grid; grid-template-columns:minmax(0,1fr) repeat(3,72px); gap: 10px; align-items: center; border: 1px solid rgba(112,224,163,.12); border-radius: 11px; padding: 12px; background: rgba(112,224,163,.035); }.section-kicker { color: #707b8e; font-size: 8px; font-weight: 700; letter-spacing: .14em; }.outcome-row>div:first-child strong { display: block; margin-top: 4px; color: #84e5ad; font-size: 11px; }.outcome-row p { margin-top: 3px; color: var(--text-tertiary); font-size: 9px; line-height: 1.45; }.token-stat { display: flex; align-items: center; flex-direction: column; border-left: 1px solid rgba(255,255,255,.07); }.token-stat span { font-size: 13px; font-weight: 650; }.token-stat small { margin-top: 2px; color: var(--text-tertiary); font-size: 8px; }
 .agent-route { display: flex; align-items: center; gap: 7px; margin-top: 10px; overflow-x: auto; }.agent-stage { display: flex; min-width: 190px; flex: 1; align-items: center; gap: 8px; border: 1px solid color-mix(in srgb,var(--agent-color) 16%,transparent); border-radius: 10px; padding: 9px; background: color-mix(in srgb,var(--agent-color) 4%,transparent); }.agent-dot { display: grid; width: 27px; height: 27px; flex-shrink: 0; place-items: center; border-radius: 8px; color: var(--agent-color); background: color-mix(in srgb,var(--agent-color) 12%,transparent); font-size: 9px; font-weight: 750; }.agent-stage div { display: flex; flex-direction: column; }.agent-stage strong { font-size: 9px; }.agent-stage small { margin-top: 2px; color: var(--text-tertiary); font-size: 8px; }.agent-count { margin-left: auto; color: var(--text-tertiary); font-size: 8px; white-space: nowrap; }.route-arrow { color: #596477; font-size: 11px; }
-.mini-timeline { margin-top: 12px; border-top: 1px solid rgba(255,255,255,.06); padding-top: 10px; }.timeline-heading { display: flex; justify-content: space-between; margin-bottom: 4px; color: var(--text-secondary); font-size: 9px; }.timeline-heading small { color: var(--text-tertiary); font-size: 8px; }.mini-event { position: relative; display: grid; grid-template-columns:8px 22px minmax(0,1fr) auto; gap: 8px; align-items: start; min-height: 40px; padding: 7px 0; }.event-marker { width: 7px; height: 7px; margin-top: 3px; border-radius: 50%; background: #727d90; }.tone-info .event-marker{background:#7c9cff}.tone-success .event-marker{background:#70e0a3}.tone-warning .event-marker{background:#f5b942}.tone-danger .event-marker{background:#f27b7b}.event-number { color: #5e687b; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 8px; }.mini-event div strong { display:block; font-size: 9px; }.mini-event p { margin-top: 3px; color: var(--text-tertiary); font-size: 8px; line-height: 1.45; }.event-agent { border-radius: 5px; padding: 2px 5px; color: var(--agent-color); background: color-mix(in srgb,var(--agent-color) 9%,transparent); font-size: 8px; }
+.mini-waterfall{margin-top:12px;border-top:1px solid rgba(255,255,255,.06);padding-top:10px}.timeline-heading{display:flex;justify-content:space-between;margin-bottom:4px;color:var(--text-secondary);font-size:9px}.timeline-heading small{color:var(--text-tertiary);font-size:8px}.mini-axis{display:flex;justify-content:space-between;margin:7px 48px 3px 150px;color:#525c6d;font-size:7px}.mini-span{display:grid;grid-template-columns:140px minmax(160px,1fr) 40px;gap:9px;align-items:center;min-height:25px}.mini-span-label{display:flex;min-width:0;gap:6px;overflow:hidden;color:var(--text-secondary);font-size:8px;text-overflow:ellipsis;white-space:nowrap}.mini-span-label b{width:48px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis}.mini-span-track{position:relative;height:18px;background:repeating-linear-gradient(90deg,transparent,transparent calc(25% - 1px),rgba(255,255,255,.04) 25%)}.mini-span-track i{position:absolute;top:6px;height:6px;min-width:4px;border-radius:3px;background:var(--agent-color);opacity:.85}.mini-span-track i.tool,.mini-span-track i.retrieval{height:4px;top:7px;background:#6dd6c0}.mini-span-track i.handoff{height:8px;top:5px;background:#b88cff}.mini-span-time{text-align:right;color:#616b7d;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:7px}
 .trace-warning { display: flex; gap: 8px; margin-top: 10px; border: 1px solid rgba(245,185,66,.15); border-radius: 10px; padding: 9px 10px; background: rgba(245,185,66,.045); color: #e6c475; }.trace-warning>span { display:grid;width:17px;height:17px;flex-shrink:0;place-items:center;border-radius:50%;background:rgba(245,185,66,.12);font-size:9px;font-weight:800}.trace-warning p{color:var(--text-tertiary);font-size:8px;line-height:1.5}.trace-warning strong{display:block;margin-bottom:2px;color:#e8c875;font-size:9px}
 .trust-verified{color:#70e0a3;background:rgba(112,224,163,.1)}.trust-degraded{color:#f5b942;background:rgba(245,185,66,.1)}.trust-partial{color:#aab4c3;background:rgba(148,163,184,.1)}.trust-compromised{color:#f27b7b;background:rgba(239,68,68,.1)}
 @media(max-width:800px){.summary-metric:nth-of-type(n+3){display:none}.outcome-row{grid-template-columns:1fr repeat(2,60px)}.token-stat:last-child{display:none}}

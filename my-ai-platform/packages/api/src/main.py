@@ -16,6 +16,7 @@
 
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -47,8 +48,7 @@ _RATE_LIMIT_WINDOW = 60.0  # seconds
 
 def _check_rate_limit(key: str) -> bool:
     """Returns True if request is allowed, False if rate limited."""
-    now = time.time()
-    import time as _time_mod
+    now = time.monotonic()
     entry = _rate_limit_store.get(key)
     if entry is None or (now - entry[0]) > _RATE_LIMIT_WINDOW:
         _rate_limit_store[key] = (now, 1)
@@ -58,8 +58,6 @@ def _check_rate_limit(key: str) -> bool:
         return False
     _rate_limit_store[key] = (reset_at, count + 1)
     return True
-
-import time as _time_module
 
 # ── 2. 初始化 SQLite ──────────────────────────────────────
 from src.db.schema import get_conn, init_db

@@ -20,7 +20,7 @@ import { useChatTrace } from "../composables/useChatTrace";
 
 const sessionId = getOrCreateSessionId();
 
-const emit = defineEmits<{ noteSaved: [] }>();
+const emit = defineEmits<{ noteSaved: []; traceInspect: [traceId: string] }>();
 const {
   traceId,
   traceExpanded,
@@ -453,6 +453,7 @@ onUnmounted(() => {
       :trace-expanded="traceExpanded"
       @toggle="toggleTrace"
       @reset="resetToGlobalTrace"
+      @inspect="emit('traceInspect', $event)"
     />
 
     <ThoughtComposer

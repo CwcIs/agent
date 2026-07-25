@@ -18,6 +18,7 @@ import type { TraceDetail, TraceEvent, TraceSpan, TraceSummary, TrustStatus } fr
 
 type DetailTab = "overview" | "timeline" | "evidence" | "raw";
 
+const props = defineProps<{ initialTraceId?: string | null }>();
 const emit = defineEmits<{ close: [] }>();
 const traces = ref<TraceSummary[]>([]);
 const selectedTrace = ref<TraceDetail | null>(null);
@@ -46,6 +47,7 @@ const filteredTraces = computed(() => {
     list = list.filter((trace) =>
       trace.trace_id.toLowerCase().includes(query) ||
       trace.session_id.toLowerCase().includes(query) ||
+      trace.input_preview?.toLowerCase().includes(query) ||
       trace.agents.some((agent) => agent.toLowerCase().includes(query)),
     );
   }
@@ -142,7 +144,13 @@ async function refreshList() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     traces.value = data.traces || [];
-    if (!selectedTrace.value && traces.value.length) await selectTrace(traces.value[0].trace_id);
+    if (!selectedTrace.value && traces.value.length) {
+      const target = props.initialTraceId
+        && traces.value.some((trace) => trace.trace_id === props.initialTraceId)
+        ? props.initialTraceId
+        : traces.value[0].trace_id;
+      await selectTrace(target);
+    }
   } catch (error) {
     loadError.value = `无法加载 Trace 列表：${String(error)}`;
   } finally {
@@ -219,7 +227,7 @@ onMounted(refreshList);
           </div>
           <label class="search-field">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-            <input v-model="filterText" placeholder="搜索 ID 或 Agent" />
+            <input v-model="filterText" placeholder="搜索问题、ID 或 Agent" />
           </label>
           <div class="filter-row">
             <select v-model="filterAgent">
@@ -245,6 +253,7 @@ onMounted(refreshList);
               <span class="run-result">{{ verdictLabel(trace.verdict) }}</span>
               <span class="run-time">{{ formatTraceTime(trace.started_at) }}</span>
             </div>
+            <p v-if="trace.input_preview" class="run-question">{{ trace.input_preview }}</p>
             <div class="agent-flow compact">
               <template v-for="(agent, index) in trace.agents" :key="`${trace.trace_id}-${agent}`">
                 <span :style="{ '--agent-color': agentMeta(agent).color }">{{ agentMeta(agent).label }}</span>
@@ -296,8 +305,8 @@ onMounted(refreshList);
           </section>
 
           <section class="metric-grid">
-            <div class="metric-card primary"><span>总耗时</span><strong>{{ formatLatency(selectedTrace.summary.total_latency_ms) }}</strong><small>模型累计延迟</small></div>
-            <div class="metric-card"><span>模型调用</span><strong>{{ selectedTrace.summary.call_count }}</strong><small>{{ selectedTrace.summary.total_tokens.toLocaleString() }} Token</small></div>
+            <div class="metric-card primary"><span>端到端耗时</span><strong>{{ formatLatency(selectedTrace.summary.wall_clock_ms) }}</strong><small>从接收请求到链路结束</small></div>
+            <div class="metric-card"><span>模型调用</span><strong>{{ selectedTrace.summary.call_count }}</strong><small>{{ formatLatency(selectedTrace.summary.total_latency_ms) }} 累计 · {{ selectedTrace.summary.total_tokens.toLocaleString() }} Token</small></div>
             <div class="metric-card"><span>工具调用</span><strong>{{ selectedTrace.summary.tool_count }}</strong><small>{{ selectedTrace.summary.retrieval_count }} 次检索</small></div>
             <div class="metric-card"><span>Agent</span><strong>{{ selectedTrace.summary.agent_count }}</strong><small>{{ selectedTrace.summary.handoff_count }} 次接力</small></div>
             <div class="metric-card"><span>可验证引用</span><strong>{{ selectedTrace.trust.verified_citation_count }}</strong><small>召回 {{ selectedTrace.trust.retrieved_note_count }} 条笔记</small></div>
@@ -515,6 +524,7 @@ onMounted(refreshList);
 .console-body { display:flex; min-height:0; flex:1; }.runs-panel { display:flex; width:326px; min-width:326px; flex-direction:column; border-right:1px solid rgba(255,255,255,.075); background:rgba(12,14,21,.72) }.runs-heading { display:flex; align-items:center; justify-content:space-between; padding:21px 18px 14px }.runs-heading div{display:flex;flex-direction:column;gap:3px}.runs-heading strong{font-size:13px}.runs-heading>span{display:grid;height:23px;min-width:23px;place-items:center;border-radius:7px;color:var(--text-tertiary);background:rgba(255,255,255,.05);font-size:10px}
 .filters{padding:0 14px 14px;border-bottom:1px solid rgba(255,255,255,.065)}.search-field{display:flex;height:36px;align-items:center;gap:8px;border:1px solid rgba(255,255,255,.085);border-radius:10px;padding:0 10px;background:rgba(255,255,255,.025)}.search-field:focus-within{border-color:rgba(124,156,255,.42);box-shadow:0 0 0 3px rgba(124,156,255,.06)}.search-field svg{width:14px;color:#697387;stroke-width:1.8}.search-field input{min-width:0;flex:1;background:transparent;color:var(--text-primary);font-size:11px;outline:none}.search-field input::placeholder{color:#626b7c}.filter-row{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}.filter-row select{height:31px;border:1px solid rgba(255,255,255,.075);border-radius:8px;padding:0 8px;background:#12151e;color:var(--text-secondary);font-size:10px;outline:none}
 .runs-list{min-height:0;flex:1;overflow-y:auto;padding:8px}.panel-state{display:flex;min-height:140px;align-items:center;justify-content:center;gap:9px;color:var(--text-tertiary);font-size:11px}.loader{width:14px;height:14px;border:2px solid rgba(124,156,255,.18);border-top-color:#8ca5ff;border-radius:50%;animation:spin .8s linear infinite}.loader.large{width:25px;height:25px}.run-card{width:100%;border:1px solid transparent;border-radius:12px;padding:12px;text-align:left;transition:.16s ease}.run-card+.run-card{margin-top:3px}.run-card:hover{background:rgba(255,255,255,.035)}.run-card.active{border-color:rgba(124,156,255,.22);background:linear-gradient(100deg,rgba(124,156,255,.1),rgba(124,156,255,.035));box-shadow:inset 2px 0 #7c9cff}.run-card-top{display:flex;align-items:center;gap:7px}.status-beacon{width:7px;height:7px;border-radius:50%}.run-result{font-size:11px;font-weight:650}.run-time{margin-left:auto;color:var(--text-tertiary);font-size:9px}.agent-flow{display:flex;align-items:center;gap:5px}.agent-flow.compact{margin-top:10px}.agent-flow span{color:var(--agent-color);font-size:10px;font-weight:650}.agent-flow b{color:#4f5869;font-size:9px}.run-meta{display:flex;gap:10px;margin-top:8px;color:var(--text-tertiary);font-size:9px}.run-id{margin-top:7px;color:#50596b;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:8px;letter-spacing:.03em}
+.run-question{display:-webkit-box;margin-top:8px;overflow:hidden;color:var(--text-secondary);font-size:10px;line-height:1.45;-webkit-box-orient:vertical;-webkit-line-clamp:2}
 .trace-detail{min-width:0;flex:1;overflow-y:auto}.empty-detail{display:flex;height:100%;align-items:center;justify-content:center;flex-direction:column;color:var(--text-tertiary);text-align:center}.empty-detail h2{margin-top:18px;color:var(--text-secondary);font-size:15px}.empty-detail p{max-width:360px;margin-top:7px;font-size:11px;line-height:1.7}.empty-orbit{position:relative;width:70px;height:70px;border:1px solid rgba(124,156,255,.16);border-radius:50%}.empty-orbit:before,.empty-orbit:after{content:"";position:absolute;border:1px solid rgba(124,156,255,.1);border-radius:50%;inset:10px}.empty-orbit:after{inset:24px;background:rgba(124,156,255,.14);box-shadow:0 0 24px rgba(124,156,255,.22)}.empty-orbit span{position:absolute;width:6px;height:6px;border-radius:50%;background:#7c9cff}.empty-orbit span:nth-child(1){top:8px;left:31px}.empty-orbit span:nth-child(2){bottom:14px;right:5px}.empty-orbit span:nth-child(3){bottom:8px;left:15px}
 .detail-hero{display:flex;gap:24px;padding:26px 30px 22px}.hero-main{min-width:0;flex:1}.hero-labels{display:flex;align-items:center;gap:7px}.scope-pill,.trust-pill{display:inline-flex;height:23px;align-items:center;border-radius:7px;padding:0 8px;font-size:9px;font-weight:650}.scope-pill{color:#aeb8ca;background:rgba(255,255,255,.055)}.trust-pill{gap:5px}.trust-pill i{width:5px;height:5px;border-radius:50%;background:currentColor}.hero-main h2{max-width:800px;margin-top:13px;font-size:20px;font-weight:650;line-height:1.4;letter-spacing:-.025em}.trace-identifiers{display:flex;flex-wrap:wrap;gap:14px;margin-top:13px;color:var(--text-tertiary);font-size:9px}.trace-identifiers code{color:#8590a4}.outcome-card{width:260px;flex-shrink:0;border:1px solid rgba(112,224,163,.16);border-radius:14px;padding:14px 16px;background:rgba(112,224,163,.045)}.outcome-card strong{display:block;margin-top:7px;color:#8ae9b2;font-size:14px}.outcome-card p{margin-top:5px;color:var(--text-tertiary);font-size:10px;line-height:1.55}.outcome-card.error,.outcome-card.incomplete{border-color:rgba(245,185,66,.18);background:rgba(245,185,66,.05)}.outcome-card.error strong,.outcome-card.incomplete strong{color:#f5b942}
 .metric-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px;padding:0 30px 22px}.metric-card{min-width:0;border:1px solid rgba(255,255,255,.065);border-radius:12px;padding:12px;background:rgba(255,255,255,.025)}.metric-card.primary{border-color:rgba(124,156,255,.18);background:rgba(124,156,255,.055)}.metric-card>span{display:block;color:var(--text-tertiary);font-size:9px}.metric-card strong{display:block;margin-top:5px;font-size:17px;font-weight:650;letter-spacing:-.03em}.metric-card small{display:block;margin-top:3px;color:#616b7d;font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

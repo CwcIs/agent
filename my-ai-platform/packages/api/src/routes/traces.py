@@ -5,7 +5,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from src.lib.trace import assess_trace, decode_event
+from src.lib.trace import assess_trace, decode_event, elapsed_ms
 from src.routes.dependencies import get_conn
 
 router = APIRouter()
@@ -120,6 +120,9 @@ def _legacy_trace_detail(trace_id: str, conn: sqlite3.Connection) -> dict:
             "total_tokens": sum(call["input_tokens"] + call["output_tokens"] for call in calls),
             "total_cost_usd": round(sum(call["cost_usd"] for call in calls), 6),
             "total_latency_ms": sum(call["latency_ms"] for call in calls),
+            # Legacy records only contain completed LLM calls, so cumulative
+            # model latency is the most honest available duration estimate.
+            "wall_clock_ms": sum(call["latency_ms"] for call in calls),
             "call_count": len(calls),
             "tool_count": 0,
             "retrieval_count": 0,
@@ -166,6 +169,10 @@ def list_traces(limit: int = 50, conn: sqlite3.Connection = Depends(get_conn)):
             (event for event in reversed(decoded) if event["event_type"] == "trace_end"),
             None,
         )
+        input_event = next(
+            (event for event in decoded if event["event_type"] == "input_received"),
+            None,
+        )
         traces.append({
             "trace_id": root["trace_id"],
             "session_id": root["session_id"],
@@ -176,12 +183,16 @@ def list_traces(limit: int = 50, conn: sqlite3.Connection = Depends(get_conn)):
             "call_count": len(calls),
             "tool_count": sum(1 for event in decoded if event["event_type"] == "tool_end"),
             "retrieval_count": sum(1 for event in decoded if event["event_type"] == "retrieval_completed"),
-            "latency_ms": sum(call["latency_ms"] for call in calls),
+            "latency_ms": elapsed_ms(root["started_at"], root["ended_at"]),
+            "model_latency_ms": sum(call["latency_ms"] for call in calls),
             "cost_usd": round(sum(call["cost_usd"] for call in calls), 6),
             "verdict": trace_end["name"] if trace_end else "incomplete",
             "started_at": root["started_at"],
             "ended_at": root["ended_at"],
             "legacy": False,
+            "input_preview": (
+                input_event["payload"].get("content_preview", "") if input_event else ""
+            ),
         })
 
     remaining = limit - len(traces)
@@ -225,6 +236,7 @@ def list_traces(limit: int = 50, conn: sqlite3.Connection = Depends(get_conn)):
                 "started_at": row["started_at"],
                 "ended_at": row["ended_at"],
                 "legacy": True,
+                "input_preview": "",
             })
             if len(traces) >= limit:
                 break
@@ -336,6 +348,7 @@ def get_trace_detail(
             "total_tokens": sum(call["input_tokens"] + call["output_tokens"] for call in calls),
             "total_cost_usd": round(sum(call["cost_usd"] for call in calls), 6),
             "total_latency_ms": sum(call["latency_ms"] for call in calls),
+            "wall_clock_ms": elapsed_ms(rows[0]["created_at"], rows[-1]["created_at"]),
             "call_count": len(calls),
             "tool_count": sum(1 for event in scoped_events if event["event_type"] == "tool_end"),
             "retrieval_count": len(retrievals),

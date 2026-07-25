@@ -31,6 +31,7 @@ const noteListRef = ref<InstanceType<typeof LeftRail> | null>(null);
 const toastRef = ref<InstanceType<typeof ToastProvider> | null>(null);
 const showCommercialPrototype = ref(false);
 const showTraceConsole = ref(false);
+const initialTraceId = ref<string | null>(null);
 const showGraphView = ref(false);
 const showProfileView = ref(false);
 const showAdminView = ref(false);
@@ -75,6 +76,11 @@ function handleGraphSelectNote(noteId: string) {
       drawerOpen.value = true;
     }
   }).catch(() => {});
+}
+
+function openTraceConsole(traceId?: string) {
+  initialTraceId.value = traceId || null;
+  showTraceConsole.value = true;
 }
 
 // 鈹€鈹€ Global Keyboard Shortcuts 鈹€鈹€
@@ -210,7 +216,7 @@ provide("toast", toast);
 
   <!-- Trace Console (full-screen overlay, toggled via Ctrl+Shift+T or ?trace=1) -->
   <div v-else-if="showTraceConsole" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
-    <TraceConsole @close="showTraceConsole = false" />
+    <TraceConsole :initial-trace-id="initialTraceId" @close="showTraceConsole = false" />
   </div>
 
   <!-- GraphView (full-screen overlay, toggled via Ctrl+Shift+G or ?graph=1) -->
@@ -286,7 +292,7 @@ provide("toast", toast);
         />
 
         <!-- Chat View -->
-        <ChatView ref="chatRef" @note-saved="noteListRef?.refresh()" />
+        <ChatView ref="chatRef" @note-saved="noteListRef?.refresh()" @trace-inspect="openTraceConsole" />
       </main>
     </template>
 

@@ -19,7 +19,7 @@ const props = defineProps<{
   traceExpanded: boolean;
 }>();
 
-defineEmits<{ toggle: []; reset: [] }>();
+defineEmits<{ toggle: []; reset: []; inspect: [traceId: string] }>();
 
 const visibleSpans = computed(() => props.traceData ? buildTraceSpans(props.traceData.events).slice(0, 8) : []);
 const spanStart = computed(() => visibleSpans.value[0]?.startMs || 0);
@@ -65,7 +65,7 @@ function trustClass(status: string): string {
           <span class="summary-status" :class="trustClass(traceData.trust.status)">
             <i />{{ trustLabel(traceData.trust.status) }} {{ traceData.trust.score }}
           </span>
-          <span class="summary-metric"><small>耗时</small>{{ formatLatency(traceData.summary.total_latency_ms) }}</span>
+          <span class="summary-metric"><small>端到端</small>{{ formatLatency(traceData.summary.wall_clock_ms) }}</span>
           <span class="summary-metric"><small>模型</small>{{ traceData.summary.call_count }} 次</span>
           <span class="summary-metric"><small>工具</small>{{ traceData.summary.tool_count }} 次</span>
           <span class="summary-metric"><small>成本</small>{{ formatCost(traceData.summary.total_cost_usd) }}</span>
@@ -78,6 +78,10 @@ function trustClass(status: string): string {
       </button>
 
       <div v-if="traceExpanded && traceData" class="trace-expanded">
+        <div class="trace-actions">
+          <span>点击步骤可在完整看板中继续排查</span>
+          <button @click="$emit('inspect', traceData.trace_id)">打开完整 Trace <b>↗</b></button>
+        </div>
         <div class="outcome-row">
           <div>
             <span class="section-kicker">OUTCOME</span>
@@ -133,6 +137,7 @@ function trustClass(status: string): string {
 .summary-status { display: inline-flex; align-items: center; gap: 5px; border-radius: 7px; padding: 5px 8px; font-size: 9px; font-weight: 650; }.summary-status i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .summary-metric { display: flex; min-width: 50px; flex-direction: column; color: var(--text-secondary); font-size: 10px; }.summary-metric small { margin-bottom: 2px; color: var(--text-tertiary); font-size: 8px; }.summary-loading { color: var(--text-tertiary); font-size: 9px; }.trace-chevron { width: 13px; height: 13px; margin-left: auto; color: var(--text-tertiary); transition: transform .18s ease; }.trace-chevron.open { transform: rotate(180deg); }
 .trace-expanded { border-top: 1px solid rgba(255,255,255,.07); padding: 14px; }
+.trace-actions{display:flex;align-items:center;justify-content:space-between;margin:-2px 0 10px;color:var(--text-tertiary);font-size:8px}.trace-actions button{display:flex;align-items:center;gap:5px;border-radius:7px;padding:5px 7px;color:#9aafff;background:rgba(124,156,255,.08);font-size:8px}.trace-actions button:hover{background:rgba(124,156,255,.14)}.trace-actions b{font-size:10px}
 .outcome-row { display: grid; grid-template-columns:minmax(0,1fr) repeat(3,72px); gap: 10px; align-items: center; border: 1px solid rgba(112,224,163,.12); border-radius: 11px; padding: 12px; background: rgba(112,224,163,.035); }.section-kicker { color: #707b8e; font-size: 8px; font-weight: 700; letter-spacing: .14em; }.outcome-row>div:first-child strong { display: block; margin-top: 4px; color: #84e5ad; font-size: 11px; }.outcome-row p { margin-top: 3px; color: var(--text-tertiary); font-size: 9px; line-height: 1.45; }.token-stat { display: flex; align-items: center; flex-direction: column; border-left: 1px solid rgba(255,255,255,.07); }.token-stat span { font-size: 13px; font-weight: 650; }.token-stat small { margin-top: 2px; color: var(--text-tertiary); font-size: 8px; }
 .agent-route { display: flex; align-items: center; gap: 7px; margin-top: 10px; overflow-x: auto; }.agent-stage { display: flex; min-width: 190px; flex: 1; align-items: center; gap: 8px; border: 1px solid color-mix(in srgb,var(--agent-color) 16%,transparent); border-radius: 10px; padding: 9px; background: color-mix(in srgb,var(--agent-color) 4%,transparent); }.agent-dot { display: grid; width: 27px; height: 27px; flex-shrink: 0; place-items: center; border-radius: 8px; color: var(--agent-color); background: color-mix(in srgb,var(--agent-color) 12%,transparent); font-size: 9px; font-weight: 750; }.agent-stage div { display: flex; flex-direction: column; }.agent-stage strong { font-size: 9px; }.agent-stage small { margin-top: 2px; color: var(--text-tertiary); font-size: 8px; }.agent-count { margin-left: auto; color: var(--text-tertiary); font-size: 8px; white-space: nowrap; }.route-arrow { color: #596477; font-size: 11px; }
 .mini-waterfall{margin-top:12px;border-top:1px solid rgba(255,255,255,.06);padding-top:10px}.timeline-heading{display:flex;justify-content:space-between;margin-bottom:4px;color:var(--text-secondary);font-size:9px}.timeline-heading small{color:var(--text-tertiary);font-size:8px}.mini-axis{display:flex;justify-content:space-between;margin:7px 48px 3px 150px;color:#525c6d;font-size:7px}.mini-span{display:grid;grid-template-columns:140px minmax(160px,1fr) 40px;gap:9px;align-items:center;min-height:25px}.mini-span-label{display:flex;min-width:0;gap:6px;overflow:hidden;color:var(--text-secondary);font-size:8px;text-overflow:ellipsis;white-space:nowrap}.mini-span-label b{width:48px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis}.mini-span-track{position:relative;height:18px;background:repeating-linear-gradient(90deg,transparent,transparent calc(25% - 1px),rgba(255,255,255,.04) 25%)}.mini-span-track i{position:absolute;top:6px;height:6px;min-width:4px;border-radius:3px;background:var(--agent-color);opacity:.85}.mini-span-track i.tool,.mini-span-track i.retrieval{height:4px;top:7px;background:#6dd6c0}.mini-span-track i.handoff{height:8px;top:5px;background:#b88cff}.mini-span-time{text-align:right;color:#616b7d;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:7px}

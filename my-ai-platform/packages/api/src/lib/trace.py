@@ -8,6 +8,7 @@ import sqlite3
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,18 @@ def get_trace_context() -> TraceContext:
 
 def content_fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+
+
+def elapsed_ms(started_at: str, ended_at: str) -> int:
+    """Calculate end-to-end latency for ISO and legacy SQLite timestamps."""
+    if not started_at or not ended_at:
+        return 0
+    try:
+        start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+        return max(0, round((end - start).total_seconds() * 1000))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _sanitize(value: Any, key: str = "") -> Any:
@@ -156,6 +169,7 @@ def record_trace_event(
     sid = session_id or context.session_id
     aid = agent_id or context.agent_id
     payload_json = canonical_payload(payload)
+    created_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
 
     try:
         previous = conn.execute(
@@ -183,8 +197,8 @@ def record_trace_event(
             """INSERT INTO trace_events
                (id, trace_id, phase_trace_id, session_id, sequence, event_type,
                 agent_id, parent_agent_id, status, name, payload_json,
-                prev_hash, event_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                prev_hash, event_hash, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 event_id,
                 root_id,
@@ -199,6 +213,7 @@ def record_trace_event(
                 payload_json,
                 prev_hash,
                 event_hash,
+                created_at,
             ),
         )
         conn.commit()

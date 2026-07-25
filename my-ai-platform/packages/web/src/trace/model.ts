@@ -11,11 +11,13 @@ export interface TraceSummary {
   tool_count: number;
   retrieval_count: number;
   latency_ms: number;
+  model_latency_ms?: number;
   cost_usd: number;
   verdict: string;
   started_at: string;
   ended_at: string;
   legacy: boolean;
+  input_preview?: string;
 }
 
 export interface TraceEvent {
@@ -99,6 +101,7 @@ export interface TraceDetail {
     total_tokens: number;
     total_cost_usd: number;
     total_latency_ms: number;
+    wall_clock_ms: number;
     call_count: number;
     tool_count: number;
     retrieval_count: number;

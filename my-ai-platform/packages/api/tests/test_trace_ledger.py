@@ -75,6 +75,8 @@ class TraceLedgerTests(unittest.TestCase):
         self.assertEqual(assessment["status"], "verified")
         self.assertEqual(assessment["score"], 100)
         self.assertEqual(assessment["missing_required_events"], [])
+        self.assertIn("T", self.rows()[0]["created_at"])
+        self.assertIn(".", self.rows()[0]["created_at"])
 
     def test_payload_tampering_is_detected(self):
         self.record_complete_trace()

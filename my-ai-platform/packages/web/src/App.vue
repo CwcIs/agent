@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { ref, provide, onMounted, onUnmounted } from "vue";
+import { computed, ref, provide, onMounted, onUnmounted } from "vue";
 import AppShell from "./components/AppShell.vue";
 import LeftRail from "./components/LeftRail.vue";
 import InsightDrawer from "./components/InsightDrawer.vue";
@@ -13,6 +13,8 @@ import ProfileView from "./views/ProfileView.vue";
 import AdminView from "./views/AdminView.vue";
 import TopStatusBar from "./components/TopStatusBar.vue";
 import ToastProvider from "./components/ToastProvider.vue";
+import WorkbenchHub from "./components/WorkbenchHub.vue";
+import { useChatThreads } from "./composables/useChatThreads";
 
 interface Note {
   id: string;
@@ -20,6 +22,7 @@ interface Note {
   content: string;
   tags: string[];
   status: string;
+  knowledge_status?: string;
   created_at: string;
 }
 
@@ -35,6 +38,20 @@ const initialTraceId = ref<string | null>(null);
 const showGraphView = ref(false);
 const showProfileView = ref(false);
 const showAdminView = ref(false);
+const showWorkbenchHub = ref(false);
+const chatStreaming = ref(false);
+const runningAgents = ref<string[]>([]);
+const {
+  activeSessionId,
+  threads,
+  loadingThreads,
+  refreshThreads,
+  selectThread,
+  createThread,
+} = useChatThreads();
+const activeThreadTitle = computed(() =>
+  threads.value.find(thread => thread.session_id === activeSessionId.value)?.title || "New thought"
+);
 
 // Daily digest state
 const showDigest = ref(false);
@@ -83,6 +100,36 @@ function openTraceConsole(traceId?: string) {
   showTraceConsole.value = true;
 }
 
+function handleNewThread() {
+  createThread();
+  selectedNote.value = null;
+  drawerOpen.value = false;
+}
+
+function handleSelectThread(sessionId: string) {
+  selectThread(sessionId);
+  selectedNote.value = null;
+  drawerOpen.value = false;
+}
+
+function handleHubNavigation(target: "trace" | "graph" | "profile" | "admin" | "digest") {
+  showWorkbenchHub.value = false;
+  if (target === "trace") showTraceConsole.value = true;
+  if (target === "graph") showGraphView.value = true;
+  if (target === "profile") showProfileView.value = true;
+  if (target === "admin") showAdminView.value = true;
+  if (target === "digest") showDigest.value = true;
+}
+
+function handleChatStatus(status: { streaming: boolean; runningAgents: string[] }) {
+  chatStreaming.value = status.streaming;
+  runningAgents.value = status.runningAgents;
+}
+
+function syncResponsiveLayout() {
+  if (window.innerWidth < 760) sidebarOpen.value = false;
+}
+
 // 鈹€鈹€ Global Keyboard Shortcuts 鈹€鈹€
 function onKeydown(e: KeyboardEvent) {
   // Ctrl+/ focus chat input
@@ -127,18 +174,23 @@ function onKeydown(e: KeyboardEvent) {
     if (showGraphView.value) { showGraphView.value = false; return; }
     if (showAdminView.value) { showAdminView.value = false; return; }
     if (showProfileView.value) { showProfileView.value = false; return; }
+    if (showWorkbenchHub.value) { showWorkbenchHub.value = false; return; }
     if (drawerOpen.value) { handleDetailClose(); return; }
     return;
   }
 }
 
 onMounted(() => {
+  syncResponsiveLayout();
   const params = new URLSearchParams(window.location.search);
   showCommercialPrototype.value = params.get("prototype") === "1";
   showTraceConsole.value = params.get("trace") === "1";
+  initialTraceId.value = params.get("traceId");
   showGraphView.value = params.get("graph") === "1";
   document.addEventListener("keydown", onKeydown);
+  window.addEventListener("resize", syncResponsiveLayout);
   fetchDailyBadge();
+  refreshThreads();
 
   // Request Web Notification permission
   if ("Notification" in window && Notification.permission === "default") {
@@ -161,6 +213,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener("keydown", onKeydown);
+  window.removeEventListener("resize", syncResponsiveLayout);
   if (pollInterval) clearInterval(pollInterval);
 });
 
@@ -251,9 +304,15 @@ provide("toast", toast);
         :selected-note-id="selectedNote?.id ?? null"
         :daily-note-count="dailyNoteCount"
         :daily-trend-count="dailyTrendCount"
+        :threads="threads"
+        :active-session-id="activeSessionId"
+        :loading-threads="loadingThreads"
         @toggle="sidebarOpen = !sidebarOpen"
         @note-selected="handleNoteSelected"
         @toggle-digest="showDigest = !showDigest"
+        @new-thread="handleNewThread"
+        @select-thread="handleSelectThread"
+        @open-hub="showWorkbenchHub = true"
       />
     </template>
 
@@ -262,25 +321,27 @@ provide("toast", toast);
       <main class="flex-1 flex flex-col min-w-0 min-h-0">
         <!-- Top Status Bar -->
         <TopStatusBar
-          :streaming="false"
-          :running-agents="[]"
+          :streaming="chatStreaming"
+          :running-agents="runningAgents"
           :session-id="'connected'"
           :daily-note-count="dailyNoteCount"
           :daily-trend-count="dailyTrendCount"
           :daily-anomaly-count="dailyAnomalyCount"
           :smart-badges="smartBadges"
+          :thread-title="activeThreadTitle"
           @toggle-digest="showDigest = !showDigest"
+          @open-hub="showWorkbenchHub = true"
         >
           <template #toggle>
             <button
               v-if="!sidebarOpen"
-              class="p-1 rounded hover:brightness-110 transition-all opacity-40 hover:opacity-70"
+              class="sidebar-toggle"
               :style="{ color: 'var(--text-secondary)' }"
+              title="打开侧边栏"
+              aria-label="打开侧边栏"
               @click="sidebarOpen = true"
             >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
+              ☰
             </button>
           </template>
         </TopStatusBar>
@@ -292,7 +353,14 @@ provide("toast", toast);
         />
 
         <!-- Chat View -->
-        <ChatView ref="chatRef" @note-saved="noteListRef?.refresh()" @trace-inspect="openTraceConsole" />
+        <ChatView
+          ref="chatRef"
+          :session-id="activeSessionId"
+          @note-saved="noteListRef?.refresh()"
+          @conversation-updated="refreshThreads"
+          @status-change="handleChatStatus"
+          @trace-inspect="openTraceConsole"
+        />
       </main>
     </template>
 
@@ -319,7 +387,29 @@ provide("toast", toast);
     </template>
   </AppShell>
 
+  <WorkbenchHub
+    :open="showWorkbenchHub"
+    :note-count="dailyNoteCount"
+    :trend-count="dailyTrendCount"
+    :anomaly-count="dailyAnomalyCount"
+    @close="showWorkbenchHub = false"
+    @navigate="handleHubNavigation"
+  />
+
   <!-- Global Toast -->
   <ToastProvider ref="toastRef" />
 </template>
+
+<style scoped>
+.sidebar-toggle {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.sidebar-toggle:hover { background: var(--surface-hover); color: var(--text-primary); }
+</style>
 

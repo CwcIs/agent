@@ -1,76 +1,142 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed } from "vue";
+import { agentMeta } from "../shared/design-tokens";
 
 const props = defineProps<{
   streaming: boolean;
   runningAgents: string[];
   sessionId: string;
+  threadTitle: string;
   dailyNoteCount?: number;
   dailyTrendCount?: number;
   dailyAnomalyCount?: number;
   smartBadges?: Array<{ type: string; label: string; priority: string }>;
 }>();
 
-const emit = defineEmits<{ toggleDigest: [] }>();
+const emit = defineEmits<{ toggleDigest: []; openHub: [] }>();
 
 const digestLabel = computed(() => {
   const notes = props.dailyNoteCount ?? 0;
   const themes = props.dailyTrendCount ?? 0;
-  if (!notes) return "No notes today";
+  if (!notes) return "今日无新增";
   return `${notes} notes · ${themes} themes`;
 });
 
 const hasHighlights = computed(() =>
-  (props.dailyTrendCount ?? 0) > 0 || (props.dailyAnomalyCount ?? 0) > 0 || (props.smartBadges?.length ?? 0) > 0
+  (props.dailyTrendCount ?? 0) > 0 ||
+  (props.dailyAnomalyCount ?? 0) > 0 ||
+  (props.smartBadges?.length ?? 0) > 0
 );
 </script>
 
 <template>
   <header class="topbar">
     <slot name="toggle" />
-    <div class="title-block">
-      <span>Studio</span>
-      <strong>Thinking Inbox</strong>
+    <div class="thread-heading">
+      <span>Active task</span>
+      <strong>{{ threadTitle }}</strong>
     </div>
 
-    <div class="status-strip">
-      <span class="live-dot" :class="{ streaming }" />
-      <span>{{ streaming ? 'Agents working' : 'Connected' }}</span>
+    <div class="agent-roster" aria-label="Agent roster">
+      <span v-for="(agent, id) in agentMeta" :key="id" class="agent-state" :class="id" :title="`${agent.label}: ${agent.role}`">
+        <i>{{ agent.short }}</i>
+        <b>@{{ id }}</b>
+      </span>
     </div>
 
     <div class="topbar-spacer" />
 
+    <div class="connection-state">
+      <span class="live-dot" :class="{ streaming }" />
+      <span>{{ streaming ? "Agents working" : "Ready" }}</span>
+    </div>
     <button class="digest-button" :class="{ active: hasHighlights }" @click="emit('toggleDigest')">
       <span>Daily Review</span>
       <strong>{{ digestLabel }}</strong>
     </button>
-    <kbd class="cmd-key">⌘K</kbd>
+    <button class="hub-button" title="打开 Workbench Hub" @click="emit('openHub')">
+      <span class="hub-icon">H</span>
+      <span>Hub</span>
+    </button>
   </header>
 </template>
 
 <style scoped>
 .topbar {
-  height: 72px;
+  height: 62px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 0 28px;
+  gap: 13px;
+  padding: 0 18px;
   border-bottom: 1px solid var(--border-subtle);
-  background: rgba(11, 12, 18, 0.58);
-  backdrop-filter: blur(24px);
+  background: #0d1115;
 }
-.title-block { display: grid; gap: 2px; }
-.title-block span { color: var(--text-tertiary); font-size: 10px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
-.title-block strong { color: var(--text-primary); font-size: 17px; letter-spacing: -0.035em; }
-.status-strip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border-subtle); border-radius: 999px; padding: 7px 10px; color: var(--text-secondary); font-size: 11px; background: rgba(255,255,255,0.035); }
-.live-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--color-success); box-shadow: 0 0 18px rgba(119,228,173,.48); }
-.live-dot.streaming { background: var(--agent-knowledge); box-shadow: 0 0 18px rgba(121,174,255,.56); }
+.thread-heading { min-width: 0; max-width: 260px; display: grid; gap: 2px; }
+.thread-heading span { color: var(--text-tertiary); font-size: 9px; font-weight: 750; text-transform: uppercase; }
+.thread-heading strong { overflow: hidden; color: var(--text-primary); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-roster { display: flex; align-items: center; border-left: 1px solid var(--border-subtle); padding-left: 12px; }
+.agent-state {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px 0 4px;
+  border-right: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+.agent-state i {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  background: #1a2229;
+  font-style: normal;
+  font-weight: 800;
+}
+.agent-state b { font-weight: 600; }
+.agent-state.knowledge i { color: var(--agent-knowledge); }
+.agent-state.review i { color: var(--agent-review); }
+.agent-state.brain i { color: var(--agent-brain); }
 .topbar-spacer { flex: 1; }
-.digest-button { min-width: 160px; display: grid; gap: 1px; text-align: left; border: 1px solid var(--border-subtle); border-radius: 16px; padding: 9px 12px; color: var(--text-secondary); background: rgba(255,255,255,0.04); transition: 160ms ease; }
-.digest-button:hover, .digest-button.active { border-color: var(--brand-border); background: var(--brand-soft); }
-.digest-button span { color: var(--text-tertiary); font-size: 10px; }
-.digest-button strong { color: var(--text-primary); font-size: 12px; }
-.cmd-key { border: 1px solid var(--border-subtle); border-radius: 11px; padding: 7px 9px; color: var(--text-tertiary); background: rgba(255,255,255,0.035); font-size: 11px; }
-@media (max-width: 820px) { .status-strip, .digest-button { display: none; } .topbar { padding: 0 16px; } }
+.connection-state { display: flex; align-items: center; gap: 7px; color: var(--text-tertiary); font-size: 10px; }
+.live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-success); }
+.live-dot.streaming { background: var(--color-warning); animation: pulse-glow 1.4s ease-in-out infinite; }
+.digest-button {
+  min-width: 134px;
+  display: grid;
+  gap: 1px;
+  padding: 6px 9px;
+  border-left: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  text-align: left;
+}
+.digest-button:hover strong, .digest-button.active strong { color: #a8dce6; }
+.digest-button span { color: var(--text-tertiary); font-size: 9px; }
+.digest-button strong { color: var(--text-secondary); font-size: 10px; }
+.hub-button {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px 0 5px;
+  border: 1px solid #31515c;
+  border-radius: 6px;
+  background: #16242a;
+  color: #d9eef2;
+  font-size: 11px;
+  font-weight: 700;
+}
+.hub-button:hover { background: #1b3038; border-color: #49717f; }
+.hub-icon { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 4px; background: #223941; color: #a8dce6; font-size: 9px; }
+@media (max-width: 900px) {
+  .agent-state b, .digest-button { display: none; }
+  .agent-state { padding-right: 4px; }
+}
+@media (max-width: 620px) {
+  .agent-roster, .connection-state { display: none; }
+  .topbar { padding: 0 10px; }
+}
 </style>

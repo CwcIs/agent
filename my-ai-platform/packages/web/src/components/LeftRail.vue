@@ -1,7 +1,8 @@
-﻿<script setup lang="ts">
-import { ref, computed } from "vue";
+<script setup lang="ts">
+import { computed, ref } from "vue";
 import NoteListView from "../views/NoteListView.vue";
 import { agentMeta, layout } from "../shared/design-tokens";
+import type { ChatThread } from "../composables/useChatThreads";
 
 interface Note {
   id: string;
@@ -18,80 +19,100 @@ const props = defineProps<{
   selectedNoteId: string | null;
   dailyNoteCount?: number;
   dailyTrendCount?: number;
+  threads: ChatThread[];
+  activeSessionId: string;
+  loadingThreads?: boolean;
 }>();
 
 const emit = defineEmits<{
   toggle: [];
   noteSelected: [note: Note];
   toggleDigest: [];
+  newThread: [];
+  selectThread: [sessionId: string];
+  openHub: [];
 }>();
 
 const noteListRef = ref<InstanceType<typeof NoteListView> | null>(null);
+const visibleThreads = computed(() => props.threads.slice(0, 8));
+
 function focusSearch() { noteListRef.value?.focusSearch(); }
 function refresh() { noteListRef.value?.refresh(); }
 defineExpose({ focusSearch, refresh });
 
-const navItems = computed(() => [
-  { id: "inbox", label: "Inbox", count: props.dailyNoteCount ?? 0 },
-  { id: "notes", label: "Notes" },
-  { id: "daily", label: "Daily Review", badge: props.dailyTrendCount ?? 0 },
-  { id: "archive", label: "Archive" },
-]);
-
-const agentItems = [
-  { id: "knowledge", label: agentMeta.knowledge.label, short: agentMeta.knowledge.short, role: agentMeta.knowledge.role },
-  { id: "review", label: agentMeta.review.label, short: agentMeta.review.short, role: agentMeta.review.role },
-  { id: "brain", label: agentMeta.brain.label, short: agentMeta.brain.short, role: agentMeta.brain.role },
-];
+function formatThreadTime(value: string): string {
+  if (!value) return "";
+  const date = new Date(value.replace(" ", "T"));
+  const today = new Date();
+  if (date.toDateString() === today.toDateString()) {
+    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  }
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
 </script>
 
 <template>
   <Transition name="sidebar">
     <aside v-show="open" class="left-rail" :style="{ width: layout.leftRailWidth }">
       <div class="brand-row">
-        <div class="brand-mark">✦</div>
+        <div class="brand-mark">TS</div>
         <div class="brand-copy">
           <strong>Thought Studio</strong>
-          <span>AI knowledge workspace</span>
+          <span>Personal knowledge team</span>
         </div>
-        <button class="ghost-icon" title="收起侧边栏" @click="emit('toggle')">‹</button>
+        <button class="ghost-icon" title="收起侧边栏" aria-label="收起侧边栏" @click="emit('toggle')">‹</button>
       </div>
 
-      <button class="primary-create">
-        <span>New thought</span>
-        <kbd>⌘N</kbd>
+      <button class="primary-create" @click="emit('newThread')">
+        <span class="plus">+</span>
+        <span>新建思考任务</span>
       </button>
 
-      <nav class="nav-section">
-        <p class="section-title">Workspace</p>
-        <button
-          v-for="item in navItems"
-          :key="item.id"
-          class="nav-item"
-          :class="{ active: item.id === 'inbox' }"
-          @click="item.id === 'daily' ? emit('toggleDigest') : null"
-        >
-          <span>{{ item.label }}</span>
-          <em v-if="item.count">{{ item.count }}</em>
-          <i v-if="item.badge">{{ item.badge }} themes</i>
-        </button>
-      </nav>
-
-      <section class="nav-section">
-        <p class="section-title">Agents</p>
-        <div v-for="agent in agentItems" :key="agent.id" class="agent-card">
-          <span class="agent-avatar" :class="agent.id">{{ agent.short }}</span>
-          <div>
-            <strong>{{ agent.label }}</strong>
-            <small>{{ agent.role }}</small>
+      <section class="thread-section">
+        <div class="section-head">
+          <p class="section-title">Tasks</p>
+          <span v-if="loadingThreads">同步中</span>
+          <span v-else>{{ threads.length }}</span>
+        </div>
+        <div class="thread-list">
+          <button
+            v-for="thread in visibleThreads"
+            :key="thread.session_id"
+            class="thread-item"
+            :class="{ active: thread.session_id === activeSessionId }"
+            @click="emit('selectThread', thread.session_id)"
+          >
+            <span class="thread-marker" />
+            <span class="thread-copy">
+              <strong>{{ thread.title }}</strong>
+              <small>{{ thread.message_count }} 条消息 · {{ formatThreadTime(thread.updated_at) }}</small>
+            </span>
+            <span class="agent-stack">
+              <i
+                v-for="agentId in thread.agent_ids.slice(0, 3)"
+                :key="agentId"
+                :class="agentId"
+                :title="agentMeta[agentId]?.label || agentId"
+              >{{ agentMeta[agentId]?.short || agentId.slice(0, 1).toUpperCase() }}</i>
+            </span>
+          </button>
+          <div v-if="!loadingThreads && !threads.length" class="thread-empty">
+            新任务会在发送第一条消息后出现在这里
           </div>
         </div>
       </section>
 
+      <div class="workspace-actions">
+        <button @click="emit('openHub')"><b>H</b><span>Workbench Hub</span><i>›</i></button>
+        <button @click="emit('toggleDigest')">
+          <b>D</b><span>Daily Review</span><em v-if="dailyTrendCount">{{ dailyTrendCount }}</em>
+        </button>
+      </div>
+
       <section class="notes-panel">
         <div class="notes-panel-head">
-          <p class="section-title">Memory</p>
-          <span>Live</span>
+          <p class="section-title">Knowledge</p>
+          <span>{{ dailyNoteCount ?? 0 }} today</span>
         </div>
         <NoteListView
           ref="noteListRef"
@@ -110,113 +131,133 @@ const agentItems = [
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 18px 12px;
+  gap: 12px;
+  padding: 14px 10px;
   border-right: 1px solid var(--border-subtle);
-  background: rgba(9, 10, 15, 0.72);
-  backdrop-filter: blur(26px);
+  background: #0b0f13;
 }
-
-.brand-row {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 2px 4px;
-}
-
+.brand-row { display: flex; align-items: center; gap: 10px; padding: 2px 3px; }
 .brand-mark {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
-  border-radius: 14px;
-  background: linear-gradient(135deg, var(--brand), var(--brand-2));
-  box-shadow: 0 18px 42px rgba(154, 134, 255, 0.28);
-  color: white;
+  border: 1px solid #31515c;
+  border-radius: 6px;
+  background: #17272d;
+  color: #a8dce6;
+  font-size: 10px;
+  font-weight: 850;
 }
-
 .brand-copy { min-width: 0; display: grid; gap: 1px; }
-.brand-copy strong { font-size: 14px; letter-spacing: -0.02em; color: var(--text-primary); }
-.brand-copy span { font-size: 10.5px; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
+.brand-copy strong { color: var(--text-primary); font-size: 14px; }
+.brand-copy span { overflow: hidden; color: var(--text-tertiary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .ghost-icon {
-  margin-left: auto;
   width: 28px;
   height: 28px;
-  border-radius: 10px;
+  margin-left: auto;
+  border-radius: 6px;
   color: var(--text-tertiary);
-  transition: 160ms ease;
+  font-size: 18px;
 }
-.ghost-icon:hover { color: var(--text-primary); background: rgba(255,255,255,0.06); }
-
+.ghost-icon:hover { color: var(--text-primary); background: var(--surface-hover); }
 .primary-create {
-  height: 44px;
-  border: 1px solid var(--brand-border);
-  border-radius: 16px;
-  padding: 0 13px;
-  color: white;
-  background: linear-gradient(135deg, rgba(154,134,255,0.30), rgba(154,134,255,0.10));
+  height: 38px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
+  gap: 9px;
+  padding: 0 10px;
+  border: 1px solid #31515c;
+  border-radius: 6px;
+  background: #16242a;
+  color: #d9eef2;
 }
 .primary-create span { font-size: 13px; font-weight: 700; }
-.primary-create kbd { color: var(--text-tertiary); font-size: 10px; }
-
-.nav-section { display: grid; gap: 6px; }
+.primary-create .plus { font-size: 18px; font-weight: 400; }
+.primary-create:hover { background: #1b3038; border-color: #49717f; }
+.section-head { display: flex; align-items: center; justify-content: space-between; }
+.section-head > span { padding-right: 7px; color: var(--text-tertiary); font-size: 10px; }
 .section-title {
   margin: 0;
-  padding: 0 8px 2px;
+  padding: 0 7px 2px;
   color: var(--text-tertiary);
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.13em;
   text-transform: uppercase;
 }
-
-.nav-item {
-  min-height: 36px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  padding: 0 10px;
+.thread-section { min-height: 104px; }
+.thread-list { display: grid; gap: 2px; max-height: 220px; margin-top: 3px; overflow-y: auto; }
+.thread-item {
+  width: 100%;
+  min-height: 47px;
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 6px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   color: var(--text-secondary);
-  font-size: 13px;
   text-align: left;
-  transition: 160ms ease;
 }
-.nav-item:hover, .nav-item.active { background: rgba(255,255,255,0.06); border-color: var(--border-subtle); color: var(--text-primary); }
-.nav-item em, .nav-item i { margin-left: auto; font-style: normal; color: var(--text-tertiary); font-size: 11px; }
-
-.agent-card {
+.thread-item:hover { background: var(--surface-hover); }
+.thread-item.active { background: #151c22; border-color: #29353f; }
+.thread-marker { width: 3px; height: 24px; flex: 0 0 3px; border-radius: 2px; background: transparent; }
+.thread-item.active .thread-marker { background: #7bc3d4; }
+.thread-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.thread-copy strong { overflow: hidden; color: var(--text-secondary); font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.thread-item.active .thread-copy strong { color: var(--text-primary); }
+.thread-copy small { color: var(--text-tertiary); font-size: 9px; }
+.agent-stack { display: flex; }
+.agent-stack i {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  margin-left: -4px;
+  border: 2px solid #0b0f13;
+  border-radius: 50%;
+  background: #202832;
+  color: var(--text-tertiary);
+  font-size: 7px;
+  font-style: normal;
+}
+.agent-stack i.knowledge { color: var(--agent-knowledge); }
+.agent-stack i.review { color: var(--agent-review); }
+.agent-stack i.brain { color: var(--agent-brain); }
+.thread-empty { padding: 10px 8px; color: var(--text-tertiary); font-size: 10px; line-height: 1.5; }
+.workspace-actions { display: grid; gap: 2px; padding: 7px 0; border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle); }
+.workspace-actions button {
+  min-height: 34px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 15px;
-  padding: 10px;
-  background: rgba(255,255,255,0.032);
+  gap: 9px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: left;
 }
-.agent-avatar { width: 25px; height: 25px; border-radius: 10px; display: grid; place-items: center; font-size: 11px; font-weight: 850; }
-.agent-avatar.knowledge { color: var(--agent-knowledge); background: rgba(121,174,255,0.12); }
-.agent-avatar.review { color: var(--agent-review); background: rgba(255,189,115,0.12); }
-.agent-avatar.brain { color: var(--agent-brain); background: rgba(196,154,255,0.12); }
-.agent-card strong { display: block; color: var(--text-primary); font-size: 12px; }
-.agent-card small { display: block; color: var(--text-tertiary); font-size: 10.5px; margin-top: 1px; line-height: 1.35; }
-
+.workspace-actions button:hover { background: var(--surface-hover); color: var(--text-primary); }
+.workspace-actions b { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 5px; background: #1b252d; color: #9ccfe0; font-size: 8px; }
+.workspace-actions i, .workspace-actions em { margin-left: auto; color: var(--text-tertiary); font-style: normal; }
+.workspace-actions em { min-width: 17px; height: 17px; display: grid; place-items: center; border-radius: 50%; background: rgba(255,196,112,.12); color: var(--color-warning); font-size: 8px; }
 .notes-panel {
   min-height: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border-subtle);
-  border-radius: 18px;
-  background: rgba(255,255,255,0.025);
   overflow: hidden;
+  border-top: 1px solid var(--border-subtle);
 }
-.notes-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 10px 8px; }
-.notes-panel-head span { color: var(--color-success); font-size: 10px; }
+.notes-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 3px 6px; }
+.notes-panel-head span { color: var(--text-tertiary); font-size: 9px; }
+@media (max-width: 759px) {
+  .left-rail {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: min(86vw, 300px) !important;
+    height: 100%;
+    box-shadow: 18px 0 50px rgba(0, 0, 0, .48);
+  }
+}
 </style>

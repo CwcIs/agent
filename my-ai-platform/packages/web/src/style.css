@@ -4,21 +4,21 @@
 
 :root {
   color-scheme: dark;
-  --app-bg: #08090d;
-  --app-bg-2: #0d0f16;
-  --surface-base: rgba(16, 18, 27, 0.78);
-  --surface-raised: rgba(24, 27, 39, 0.82);
+  --app-bg: #090d11;
+  --app-bg-2: #0d1217;
+  --surface-base: rgba(16, 21, 27, 0.94);
+  --surface-raised: rgba(23, 30, 37, 0.96);
   --surface-hover: rgba(255, 255, 255, 0.065);
   --surface-glass: rgba(255, 255, 255, 0.045);
   --border-subtle: rgba(255, 255, 255, 0.075);
   --border-strong: rgba(255, 255, 255, 0.15);
-  --text-primary: #f6f3ec;
-  --text-secondary: #b7afa6;
-  --text-tertiary: #777782;
-  --brand: #9a86ff;
-  --brand-2: #c6a6ff;
-  --brand-soft: rgba(154, 134, 255, 0.14);
-  --brand-border: rgba(154, 134, 255, 0.34);
+  --text-primary: #f0f3f2;
+  --text-secondary: #aeb8b8;
+  --text-tertiary: #718087;
+  --brand: #79bdcb;
+  --brand-2: #a8dce6;
+  --brand-soft: rgba(121, 189, 203, 0.12);
+  --brand-border: rgba(121, 189, 203, 0.30);
   --agent-knowledge: #79aeff;
   --agent-review: #ffbd73;
   --agent-brain: #c49aff;
@@ -37,10 +37,7 @@
 html, body, #app { width: 100%; height: 100%; }
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at 18% -8%, rgba(154, 134, 255, 0.18), transparent 34%),
-    radial-gradient(circle at 82% 6%, rgba(121, 174, 255, 0.10), transparent 30%),
-    linear-gradient(135deg, var(--app-bg), var(--app-bg-2) 52%, #090a0f);
+  background: var(--app-bg);
   color: var(--text-primary);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -50,7 +47,7 @@ button, textarea, input { font: inherit; }
 button { background: transparent; border: 0; cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 
-::selection { background: rgba(154, 134, 255, 0.34); }
+::selection { background: rgba(121, 189, 203, 0.32); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
@@ -79,4 +76,4 @@ button:disabled { cursor: not-allowed; }
 
 .prose { max-width: none !important; }
 .prose :where(a) { color: var(--brand-2); }
-.prose :where(code) { color: #d8d0ff; background: rgba(154,134,255,.13); border-radius: 6px; padding: 0.1em 0.35em; }
+.prose :where(code) { color: #c5e8ef; background: rgba(121,189,203,.12); border-radius: 5px; padding: 0.1em 0.35em; }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
   agentMeta,
   buildTraceSpans,
@@ -17,6 +17,7 @@ import {
 import type { TraceDetail, TraceEvent, TraceSpan, TraceSummary, TrustStatus } from "../trace/model";
 
 type DetailTab = "overview" | "timeline" | "evidence" | "raw";
+type TimelineFilter = "all" | "model" | "tool" | "handoff" | "issue";
 
 const props = defineProps<{ initialTraceId?: string | null }>();
 const emit = defineEmits<{ close: [] }>();
@@ -30,12 +31,23 @@ const filterStatus = ref("");
 const filterText = ref("");
 const activeTab = ref<DetailTab>("overview");
 const selectedSpan = ref<TraceSpan | null>(null);
+const timelineFilter = ref<TimelineFilter>("all");
+const timelineSearch = ref("");
+const actionNotice = ref("");
+let liveRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
 const detailTabs: Array<{ id: DetailTab; label: string }> = [
   { id: "overview", label: "执行摘要" },
   { id: "timeline", label: "完整时间线" },
   { id: "evidence", label: "证据与校验" },
   { id: "raw", label: "原始事件" },
+];
+const timelineFilters: Array<{ id: TimelineFilter; label: string }> = [
+  { id: "all", label: "全部" },
+  { id: "model", label: "模型" },
+  { id: "tool", label: "工具/检索" },
+  { id: "handoff", label: "Agent 接力" },
+  { id: "issue", label: "异常" },
 ];
 
 const filteredTraces = computed(() => {
@@ -106,6 +118,29 @@ const issueCount = computed(() => selectedTrace.value
   : 0,
 );
 
+const filteredTimeline = computed(() => {
+  if (!selectedTrace.value) return [];
+  const groups: Record<string, string[]> = {
+    model: ["llm_call"],
+    tool: ["tool_start", "tool_end", "retrieval_completed"],
+    handoff: ["handoff_proposed", "policy_decision", "handoff", "agent_start", "agent_end"],
+    issue: ["warning", "error"],
+  };
+  const allowed = timelineFilter.value === "all" ? null : groups[timelineFilter.value];
+  const query = timelineSearch.value.trim().toLowerCase();
+  return selectedTrace.value.events.filter((event) => {
+    if (allowed && !allowed.includes(event.event_type) && !(timelineFilter.value === "issue" && event.status === "error")) return false;
+    if (!query) return true;
+    return [
+      event.event_type,
+      event.name,
+      event.agent_id,
+      eventSummary(event),
+      JSON.stringify(event.payload || {}),
+    ].some((value) => String(value).toLowerCase().includes(query));
+  });
+});
+
 function spanOffset(span: TraceSpan): number {
   return Math.max(0, Math.min(94, ((span.startMs - flowStart.value) / flowDuration.value) * 100));
 }
@@ -167,6 +202,10 @@ async function selectTrace(traceId: string) {
     const response = await fetch(`/traces/${traceId}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     selectedTrace.value = await response.json();
+    const url = new URL(window.location.href);
+    url.searchParams.set("trace", "1");
+    url.searchParams.set("traceId", selectedTrace.value!.trace_id);
+    window.history.replaceState({}, "", url);
   } catch (error) {
     selectedTrace.value = null;
     loadError.value = `无法加载 Trace 详情：${String(error)}`;
@@ -175,7 +214,58 @@ async function selectTrace(traceId: string) {
   }
 }
 
-onMounted(refreshList);
+async function refreshSelectedTrace() {
+  if (!selectedTrace.value || selectedTrace.value.summary.verdict !== "incomplete") return;
+  try {
+    const response = await fetch(`/traces/${selectedTrace.value.requested_trace_id}`);
+    if (response.ok) selectedTrace.value = await response.json();
+  } catch {
+    // Live refresh is supplementary and should not interrupt inspection.
+  }
+}
+
+async function copyTraceId() {
+  if (!selectedTrace.value) return;
+  await navigator.clipboard.writeText(selectedTrace.value.trace_id);
+  actionNotice.value = "Trace ID 已复制";
+  window.setTimeout(() => { actionNotice.value = ""; }, 1600);
+}
+
+function exportTrace() {
+  if (!selectedTrace.value) return;
+  const blob = new Blob([JSON.stringify(selectedTrace.value, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `trace-${selectedTrace.value.trace_id.slice(0, 8)}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+  actionNotice.value = "Trace JSON 已导出";
+  window.setTimeout(() => { actionNotice.value = ""; }, 1600);
+}
+
+function onConsoleKeydown(event: KeyboardEvent) {
+  const target = event.target as HTMLElement;
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
+  if (!["ArrowDown", "ArrowUp", "j", "k"].includes(event.key)) return;
+  event.preventDefault();
+  const current = filteredTraces.value.findIndex((trace) => trace.trace_id === selectedTrace.value?.trace_id);
+  const delta = event.key === "ArrowDown" || event.key === "j" ? 1 : -1;
+  const next = Math.max(0, Math.min(filteredTraces.value.length - 1, current + delta));
+  const trace = filteredTraces.value[next];
+  if (trace) selectTrace(trace.trace_id);
+}
+
+onMounted(() => {
+  refreshList();
+  document.addEventListener("keydown", onConsoleKeydown);
+  liveRefreshTimer = setInterval(refreshSelectedTrace, 3000);
+});
+
+onUnmounted(() => {
+  document.removeEventListener("keydown", onConsoleKeydown);
+  if (liveRefreshTimer) clearInterval(liveRefreshTimer);
+});
 </script>
 
 <template>
@@ -190,10 +280,11 @@ onMounted(refreshList);
       </div>
 
       <div class="header-health">
-        <div class="health-dot" />
+        <div class="health-dot" :class="{ live: selectedTrace?.summary.verdict === 'incomplete' }" />
         <span>{{ traces.length }} 次执行</span>
         <span class="header-divider" />
-        <span>{{ trustCounts.verified }} 条可信链路</span>
+        <span v-if="selectedTrace?.summary.verdict === 'incomplete'">正在追踪执行</span>
+        <span v-else>{{ trustCounts.verified }} 条可信链路</span>
       </div>
 
       <div class="header-actions">
@@ -294,6 +385,9 @@ onMounted(refreshList);
                 <span>Trace <code>{{ selectedTrace.trace_id.slice(0, 12) }}</code></span>
                 <span>Session <code>{{ selectedTrace.session_id.slice(0, 12) }}</code></span>
                 <span>{{ formatTraceTime(selectedTrace.summary.started_at) }} → {{ formatTraceTime(selectedTrace.summary.ended_at) }}</span>
+                <button @click="copyTraceId">复制 ID</button>
+                <button @click="exportTrace">导出 JSON</button>
+                <em v-if="actionNotice">{{ actionNotice }}</em>
               </div>
             </div>
 
@@ -443,9 +537,20 @@ onMounted(refreshList);
             </template>
 
             <section v-else-if="activeTab === 'timeline'" class="content-card timeline-card">
-              <div class="timeline-toolbar"><span>按发生顺序展示完整链路</span><span>{{ selectedTrace.events.length }} EVENTS</span></div>
+              <div class="timeline-toolbar">
+                <div class="timeline-filters">
+                  <button v-for="item in timelineFilters" :key="item.id" :class="{ active: timelineFilter === item.id }" @click="timelineFilter = item.id">
+                    {{ item.label }}
+                  </button>
+                </div>
+                <label class="timeline-search">
+                  <span>⌕</span><input v-model="timelineSearch" placeholder="搜索事件、Agent 或参数" />
+                </label>
+                <span>{{ filteredTimeline.length }} / {{ selectedTrace.events.length }} EVENTS</span>
+              </div>
               <div class="full-timeline">
-                <article v-for="event in selectedTrace.events" :key="event.id" class="timeline-event" :class="`tone-${eventTone(event)}`">
+                <div v-if="!filteredTimeline.length" class="inline-empty">没有符合当前筛选条件的事件。</div>
+                <article v-for="event in filteredTimeline" :key="event.id" class="timeline-event" :class="`tone-${eventTone(event)}`">
                   <div class="event-sequence">#{{ event.sequence }}</div>
                   <div class="event-glyph"><span /></div>
                   <div class="event-body">
@@ -543,5 +648,7 @@ onMounted(refreshList);
 .flow-card{margin-bottom:12px}.flow-legend{display:flex;gap:11px;color:var(--text-tertiary);font-size:8px}.flow-legend span{display:flex;align-items:center;gap:4px}.flow-legend i{width:12px;height:3px;border-radius:3px;background:#7c9cff}.flow-legend i.tool{background:#6dd6c0}.flow-legend i.handoff{background:#b88cff}.flow-workspace{display:grid;grid-template-columns:minmax(460px,1fr) 250px;border-top:1px solid rgba(255,255,255,.055)}.waterfall{min-width:0;padding:10px 12px 14px}.waterfall-axis{display:grid;grid-template-columns:repeat(5,1fr);margin:0 55px 7px 164px;color:#4f596b;font-size:7px}.waterfall-axis span:not(:first-child){text-align:right}.waterfall-row{display:grid;width:100%;grid-template-columns:152px minmax(200px,1fr) 45px;gap:10px;align-items:center;min-height:34px;border-radius:7px;padding:0 5px;text-align:left;transition:.14s ease}.waterfall-row:hover,.waterfall-row.active{background:rgba(124,156,255,.07)}.waterfall-row.active{box-shadow:inset 2px 0 #7c9cff}.waterfall-label{display:flex;min-width:0;align-items:center;gap:7px}.waterfall-label b{width:62px;overflow:hidden;font-size:8px;text-overflow:ellipsis;white-space:nowrap}.waterfall-label>span{overflow:hidden;color:var(--text-secondary);font-size:9px;text-overflow:ellipsis;white-space:nowrap}.waterfall-track{position:relative;height:24px;border-left:1px solid rgba(255,255,255,.08);border-right:1px solid rgba(255,255,255,.04);background:repeating-linear-gradient(90deg,transparent,transparent calc(25% - 1px),rgba(255,255,255,.045) 25%)}.waterfall-track i{position:absolute;top:8px;height:8px;min-width:5px;border-radius:3px;background:var(--agent-color);box-shadow:0 0 12px color-mix(in srgb,var(--agent-color) 25%,transparent);opacity:.82}.waterfall-track i.tool,.waterfall-track i.retrieval{height:6px;top:9px;background:#6dd6c0}.waterfall-track i.handoff{height:10px;top:7px;background:#b88cff}.waterfall-row.error .waterfall-track i{background:#f27b7b}.waterfall-time{text-align:right;color:#687286;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:8px}
 .event-inspector{min-height:280px;border-left:1px solid rgba(255,255,255,.06);padding:15px;background:rgba(255,255,255,.015)}.inspector-heading{display:flex;align-items:center;justify-content:space-between}.event-kind{border-radius:5px;padding:3px 6px;color:#9bb0ff;background:rgba(124,156,255,.1);font-size:8px}.inspector-heading button{display:grid;width:23px;height:23px;place-items:center;border-radius:6px;color:var(--text-tertiary);font-size:15px}.event-inspector h4{margin-top:13px;font-size:12px}.event-inspector>p{margin-top:7px;color:var(--text-secondary);font-size:9px;line-height:1.55}.event-inspector dl{margin-top:14px;border-top:1px solid rgba(255,255,255,.06)}.event-inspector dl div{display:flex;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,.05);padding:8px 0;font-size:8px}.event-inspector dt{color:var(--text-tertiary)}.event-inspector dd{color:var(--text-secondary)}.inspect-raw{margin-top:13px;color:#92a8ff;font-size:8px}.inspector-empty{display:flex;height:245px;align-items:center;justify-content:center;flex-direction:column;text-align:center}.inspector-empty>span{display:grid;width:32px;height:32px;place-items:center;border-radius:9px;color:#8298eb;background:rgba(124,156,255,.08);font-size:15px}.inspector-empty strong{margin-top:12px;font-size:10px}.inspector-empty p{max-width:180px;margin-top:6px;color:var(--text-tertiary);font-size:8px;line-height:1.55}
 .status-segments{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;margin-bottom:8px;border-radius:9px;padding:3px;background:rgba(255,255,255,.035)}.status-segments button{display:flex;height:27px;align-items:center;justify-content:center;gap:4px;border-radius:7px;color:var(--text-tertiary);font-size:8px}.status-segments button.active{color:#dce3f2;background:rgba(124,156,255,.12);box-shadow:0 1px 5px rgba(0,0,0,.2)}.status-segments b{color:#6d788b;font-size:7px}.clear-filter{height:31px;border:1px solid rgba(255,255,255,.075);border-radius:8px;color:var(--text-tertiary);font-size:8px}.clear-filter:not(:disabled):hover{color:#aebffb;border-color:rgba(124,156,255,.24)}.clear-filter:disabled{opacity:.35}
+.health-dot.live{background:#f5b942;animation:live-pulse 1.4s ease-in-out infinite}.trace-identifiers button{border-radius:5px;padding:2px 5px;color:#91a8ff;background:rgba(124,156,255,.07);font-size:8px}.trace-identifiers button:hover{background:rgba(124,156,255,.13)}.trace-identifiers em{color:#70e0a3;font-size:8px;font-style:normal}.timeline-toolbar{gap:12px;align-items:center}.timeline-filters{display:flex;gap:3px}.timeline-filters button{border-radius:6px;padding:5px 7px;color:var(--text-tertiary);font-size:8px}.timeline-filters button.active{color:#dce4f5;background:rgba(124,156,255,.12)}.timeline-search{display:flex;height:28px;min-width:190px;flex:1;align-items:center;gap:6px;border:1px solid rgba(255,255,255,.07);border-radius:7px;padding:0 8px;background:rgba(255,255,255,.02)}.timeline-search span{font-size:11px}.timeline-search input{min-width:0;flex:1;background:transparent;color:var(--text-secondary);font-size:8px;outline:none}.timeline-search input::placeholder{color:#596376}@keyframes live-pulse{0%,100%{box-shadow:0 0 0 0 rgba(245,185,66,.15)}50%{box-shadow:0 0 0 5px rgba(245,185,66,0)}}
 @media(max-width:1100px){.flow-workspace{grid-template-columns:1fr}.event-inspector{min-height:0;border-top:1px solid rgba(255,255,255,.06);border-left:0}.inspector-empty{height:100px}}
+@media(max-width:760px){.timeline-toolbar{align-items:stretch;flex-direction:column}.timeline-filters{overflow-x:auto}.timeline-search{width:100%}}
 </style>

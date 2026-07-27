@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from src.routes.dependencies import get_conn
+from src.lib.chat_threads import get_history, list_threads
 
 router = APIRouter()
 
@@ -123,6 +124,23 @@ class ChatStreamBody(BaseModel):
     input: str
     session_id: str = ""
     prompt_version: str = "v3"
+
+
+@router.get("/chat/threads")
+def list_chat_threads(limit: int = 30, conn: sqlite3.Connection = Depends(get_conn)):
+    """List recent isolated chat workspaces with a stable, user-derived title."""
+    return list_threads(conn, limit)
+
+
+@router.get("/chat/history")
+def get_chat_history(
+    session_id: str,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """Return the visible conversation for one isolated workspace."""
+    if not session_id.strip():
+        raise HTTPException(status_code=400, detail="session_id is required")
+    return get_history(conn, session_id)
 
 
 # ── POST /chat/stream ─────────────────────────────────────

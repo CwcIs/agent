@@ -40,6 +40,12 @@ function handleSuggestion(suggestion: { prefix: string }) {
   emit("send");
 }
 
+function insertMention(agentId: string) {
+  const mention = `@${agentId} `;
+  input.value = input.value.replace(/^@(knowledge|review|brain)\s+/, "");
+  input.value = mention + input.value;
+}
+
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -83,12 +89,13 @@ function handleInput(event: Event) {
         @input="handleInput"
       />
       <footer class="composer-actions">
-        <button @click="emit('insertCommand', '/review')">+ Review</button>
-        <button @click="emit('insertCommand', '/brain')">+ Brain</button>
-        <button># Tag</button>
+        <span class="route-label">Route to</span>
+        <button class="agent-route knowledge" title="交给 Knowledge Agent" @click="insertMention('knowledge')">@K</button>
+        <button class="agent-route review" title="交给 Review Agent" @click="insertMention('review')">@R</button>
+        <button class="agent-route brain" title="交给 Brain Agent" @click="insertMention('brain')">@B</button>
         <div class="spacer" />
-        <button v-if="!streaming" class="send-btn" :disabled="!input.trim()" @click="emit('send')">Send ↵</button>
-        <button v-else class="stop-btn" @click="emit('abort')">Stop</button>
+        <button v-if="!streaming" class="send-btn" :disabled="!input.trim()" title="发送" aria-label="发送" @click="emit('send')">↑</button>
+        <button v-else class="stop-btn" title="停止生成" aria-label="停止生成" @click="emit('abort')">■</button>
       </footer>
     </div>
   </div>
@@ -98,23 +105,28 @@ function handleInput(event: Event) {
 .composer-zone { position: relative; flex-shrink: 0; width: min(820px, calc(100% - 32px)); margin: 0 auto; padding: 0 0 22px; }
 .suggestion-row { display: flex; align-items: center; gap: 8px; margin: 0 12px 10px; }
 .suggestion-row span { color: var(--text-tertiary); font-size: 11px; }
-.suggestion-row button, .composer-actions button { border: 1px solid var(--border-subtle); border-radius: 999px; background: rgba(255,255,255,.05); color: var(--text-secondary); padding: 7px 11px; font-size: 12px; transition: 160ms ease; }
+.suggestion-row button, .composer-actions button { border: 1px solid var(--border-subtle); border-radius: 6px; background: rgba(255,255,255,.04); color: var(--text-secondary); padding: 7px 9px; font-size: 11px; transition: 160ms ease; }
 .suggestion-row button:hover, .composer-actions button:hover { transform: translateY(-1px); filter: brightness(1.12); }
-.command-panel { position: absolute; left: 0; right: 0; bottom: 100%; z-index: 20; margin-bottom: 12px; border: 1px solid var(--border-subtle); border-radius: 20px; background: rgba(19,21,31,.96); box-shadow: 0 24px 80px rgba(0,0,0,.38); overflow: hidden; }
+.command-panel { position: absolute; left: 0; right: 0; bottom: 100%; z-index: 20; margin-bottom: 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: rgba(19,21,31,.96); box-shadow: 0 24px 80px rgba(0,0,0,.38); overflow: hidden; }
 .command-title { color: var(--text-tertiary); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; padding: 11px 15px 8px; border-bottom: 1px solid var(--border-subtle); }
 .command-item { width: 100%; display: flex; align-items: center; gap: 10px; padding: 12px 15px; text-align: left; transition: 160ms ease; }
 .command-item:hover { background: rgba(255,255,255,.055); }
 .command-item span { width: 24px; height: 24px; border-radius: 9px; display: grid; place-items: center; font-weight: 850; }
 .command-item strong { color: var(--text-primary); font-size: 13px; }
 .command-item em { color: var(--text-tertiary); font-style: normal; font-size: 12px; }
-.composer-card { position: relative; border: 1px solid rgba(255,255,255,.14); border-radius: 28px; background: rgba(20,23,34,.90); box-shadow: 0 32px 100px rgba(0,0,0,.42), 0 0 0 1px rgba(154,134,255,.05), inset 0 1px 0 rgba(255,255,255,.08); overflow: hidden; backdrop-filter: blur(28px); }
+.composer-card { position: relative; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; background: #141a20; box-shadow: 0 18px 60px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.05); overflow: hidden; }
 .composer-card.active { border-color: var(--brand-border); box-shadow: 0 32px 100px rgba(0,0,0,.42), 0 0 0 1px var(--brand-border), inset 0 1px 0 rgba(255,255,255,.08); }
-.active-tag { position: absolute; top: 10px; right: 12px; border: 1px solid var(--brand-border); border-radius: 999px; background: var(--brand-soft); color: var(--brand-2); padding: 4px 8px; font-size: 10px; }
+.active-tag { position: absolute; top: 10px; right: 12px; border: 1px solid var(--brand-border); border-radius: 5px; background: var(--brand-soft); color: var(--brand-2); padding: 4px 8px; font-size: 10px; }
 .chat-input { width: 100%; min-height: 74px; max-height: 180px; resize: none; border: 0; outline: none; background: transparent; color: var(--text-primary); padding: 19px 20px 8px; font-size: 15px; line-height: 1.65; }
 .chat-input::placeholder { color: var(--text-tertiary); }
 .composer-actions { display: flex; align-items: center; gap: 8px; padding: 8px 11px 11px; }
+.route-label { color: var(--text-tertiary); font-size: 10px; }
+.agent-route.knowledge { color: var(--agent-knowledge); }
+.agent-route.review { color: var(--agent-review); }
+.agent-route.brain { color: var(--agent-brain); }
 .spacer { flex: 1; }
-.send-btn { color: white !important; background: linear-gradient(135deg, var(--brand), var(--brand-2)) !important; border-color: transparent !important; padding-inline: 15px !important; }
+.send-btn, .stop-btn { width: 32px; height: 32px; padding: 0 !important; display: grid; place-items: center; font-size: 16px !important; }
+.send-btn { color: #0b1316 !important; background: #a8dce6 !important; border-color: transparent !important; }
 .send-btn:disabled { opacity: .38; transform: none !important; }
 .stop-btn { color: white !important; background: var(--color-danger) !important; border-color: transparent !important; }
 </style>

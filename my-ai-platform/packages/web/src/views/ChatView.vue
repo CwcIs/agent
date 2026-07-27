@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { ref, nextTick, onUnmounted, computed } from "vue";
+import { ref, nextTick, onMounted, onUnmounted, computed, watch } from "vue";
 import AgentDivider from "../components/AgentDivider.vue";
 import AgentTraceBar from "../components/AgentTraceBar.vue";
 import ChatTracePanel from "../components/ChatTracePanel.vue";
@@ -11,16 +11,19 @@ import {
   COMMANDS,
   TAG_LABEL,
   buildChipsFromTool,
-  getOrCreateSessionId,
   parseTag,
 } from "../chat/model";
 import type { HandoffStep, Message } from "../chat/model";
 import { readSSEStream } from "../chat/sse";
 import { useChatTrace } from "../composables/useChatTrace";
 
-const sessionId = getOrCreateSessionId();
-
-const emit = defineEmits<{ noteSaved: []; traceInspect: [traceId: string] }>();
+const props = defineProps<{ sessionId: string }>();
+const emit = defineEmits<{
+  noteSaved: [];
+  traceInspect: [traceId: string];
+  conversationUpdated: [];
+  statusChange: [status: { streaming: boolean; runningAgents: string[] }];
+}>();
 const {
   traceId,
   traceExpanded,
@@ -41,6 +44,50 @@ const activeTag = computed(() => parseTag(input.value));
 const messagesEl = ref<HTMLElement | null>(null);
 
 let abortController: AbortController | null = null;
+let historyRequest = 0;
+
+async function loadHistory(sessionId: string) {
+  const requestId = ++historyRequest;
+  abortStream();
+  messages.value = [];
+  handoffSteps.value = [];
+  currentVerdict.value = null;
+  currentVerdictReason.value = null;
+  resetTrace();
+  try {
+    const response = await fetch(`/chat/history?session_id=${encodeURIComponent(sessionId)}`);
+    if (!response.ok || requestId !== historyRequest) return;
+    const data = await response.json();
+    let previousAgent = "";
+    const restored: Message[] = [];
+    for (const item of data.messages || []) {
+      const agentId = item.role === "assistant" ? (item.agent_id || "knowledge") : undefined;
+      const timestamp = new Date(item.created_at.replace(" ", "T")).getTime();
+      if (agentId && previousAgent && agentId !== previousAgent) {
+        restored.push({
+          role: "assistant",
+          content: "",
+          agentId,
+          done: true,
+          isSwitchBanner: true,
+          timestamp,
+        });
+      }
+      restored.push({
+        role: item.role,
+        content: item.content,
+        agentId,
+        done: true,
+        timestamp,
+      });
+      if (agentId) previousAgent = agentId;
+    }
+    messages.value = restored;
+    await scrollBottom(true);
+  } catch {
+    if (requestId === historyRequest) messages.value = [];
+  }
+}
 
 // 鈹€鈹€ 鏅鸿兘婊氬姩 鈹€鈹€
 const userScrolledUp = ref(false);
@@ -287,6 +334,7 @@ function sendMessage() {
         } catch { /* ignore */ }
         abortController = null;
         emit("noteSaved");
+        emit("conversationUpdated");
         break;
       }
 
@@ -307,7 +355,7 @@ function sendMessage() {
   fetch("/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ input: userInput, session_id: sessionId }),
+    body: JSON.stringify({ input: userInput, session_id: props.sessionId }),
     signal: abortController.signal,
   })
     .then(async (response) => {
@@ -366,6 +414,14 @@ const greeting = computed(() => {
 
 defineExpose({ sendWithText });
 
+onMounted(() => loadHistory(props.sessionId));
+watch(() => props.sessionId, sessionId => loadHistory(sessionId));
+watch(
+  [streaming, runningAgents],
+  () => emit("statusChange", { streaming: streaming.value, runningAgents: runningAgents.value }),
+  { immediate: true, deep: true },
+);
+
 onUnmounted(() => {
   clearStaleTimer();
   abortController?.abort();
@@ -387,28 +443,30 @@ onUnmounted(() => {
 
     <div ref="messagesEl" class="message-canvas" @scroll="onMessagesScroll">
       <section v-if="!messages.length" class="empty-hero">
-        <div class="hero-orb">✦</div>
-        <p class="hero-kicker">AI Thought Studio</p>
-        <h1>{{ greeting }}，今天先捕捉哪一个想法？</h1>
-        <p class="hero-copy">丢进一个碎片。我会帮你保存、连接旧笔记、挑战假设，或扩展成新的方向。</p>
+        <div class="empty-heading">
+          <span class="empty-mark">N</span>
+          <div>
+            <p class="hero-kicker">New isolated task</p>
+            <h1>{{ greeting }}，从一个问题开始</h1>
+          </div>
+        </div>
+        <p class="hero-copy">这个任务有独立上下文。直接记录想法，或明确指定一位 Agent 开始。</p>
         <div class="hero-actions">
-          <button v-for="cmd in COMMANDS" :key="cmd.trigger" :style="{ borderColor: cmd.border, color: cmd.color, background: cmd.bg }" @click="insertCommand(cmd.trigger)">
-            {{ cmd.trigger }} · {{ cmd.desc }}
+          <button @click="input = '@knowledge '">
+            <b class="knowledge">K</b><span><strong>@knowledge</strong><small>整理与检索</small></span>
+          </button>
+          <button @click="input = '@review '">
+            <b class="review">R</b><span><strong>@review</strong><small>挑战假设</small></span>
+          </button>
+          <button @click="input = '@brain '">
+            <b class="brain">B</b><span><strong>@brain</strong><small>联想扩展</small></span>
           </button>
         </div>
-        <div class="hero-grid">
-          <div>
-            <strong>Capture</strong>
-            <span>把碎片想法先收进来</span>
-          </div>
-          <div>
-            <strong>Review</strong>
-            <span>找出假设、漏洞和风险</span>
-          </div>
-          <div>
-            <strong>Brain</strong>
-            <span>联想相邻概念与可能性</span>
-          </div>
+        <div class="task-hints">
+          <span>常用入口</span>
+          <button v-for="cmd in COMMANDS" :key="cmd.trigger" @click="insertCommand(cmd.trigger)">
+            {{ cmd.trigger }} {{ cmd.desc }}
+          </button>
         </div>
       </section>
 
@@ -428,6 +486,7 @@ onUnmounted(() => {
           :agent-id="msg.agentId"
           :done="msg.done"
           :insight-chips="msg.insightChips"
+          :tool-calls="msg.toolCalls"
           :timestamp="msg.timestamp"
           @chip-click="onInsightChipClick"
         />
@@ -505,38 +564,57 @@ onUnmounted(() => {
 .stale-warning button { margin-left: auto; color: var(--color-warning); text-decoration: underline; text-underline-offset: 3px; }
 
 .empty-hero {
-  min-height: 100%;
-  width: min(820px, calc(100% - 32px));
+  width: min(720px, calc(100% - 32px));
   margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  text-align: center;
-  padding: 48px 0 130px;
+  padding: min(14vh, 112px) 0 80px;
 }
-
-.hero-orb {
-  width: 58px;
-  height: 58px;
-  border-radius: 22px;
+.empty-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.empty-mark {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
   display: grid;
   place-items: center;
-  color: white;
-  background: linear-gradient(135deg, var(--brand), var(--brand-2));
-  box-shadow: 0 24px 70px rgba(154,134,255,.28);
-  margin-bottom: 18px;
+  border: 1px solid #31515c;
+  border-radius: 7px;
+  background: #17272d;
+  color: #a8dce6;
+  font-size: 12px;
+  font-weight: 850;
 }
-.hero-kicker { margin: 0 0 8px; color: var(--brand-2); font-size: 11px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
-.empty-hero h1 { margin: 0; max-width: 720px; color: var(--text-primary); font-size: clamp(30px, 5vw, 56px); line-height: 1.04; letter-spacing: -0.065em; }
-.hero-copy { max-width: 560px; margin: 18px auto 0; color: var(--text-secondary); font-size: 15px; line-height: 1.75; }
-.hero-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 26px; }
-.hero-actions button { border: 1px solid; border-radius: 999px; padding: 9px 13px; font-size: 12px; transition: 160ms ease; }
-.hero-actions button:hover { transform: translateY(-1px); filter: brightness(1.12); }
-.hero-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; width: min(680px, 100%); margin-top: 30px; }
-.hero-grid div { border: 1px solid var(--border-subtle); border-radius: 18px; background: rgba(255,255,255,.035); padding: 16px; text-align: left; }
-.hero-grid strong { display: block; color: var(--text-primary); font-size: 13px; margin-bottom: 5px; }
-.hero-grid span { color: var(--text-tertiary); font-size: 12px; line-height: 1.5; }
+.hero-kicker { margin: 0 0 4px; color: #82b8c4; font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.empty-hero h1 { margin: 0; color: var(--text-primary); font-size: 24px; line-height: 1.25; }
+.hero-copy { margin: 16px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.7; }
+.hero-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 20px; }
+.hero-actions button {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  text-align: left;
+}
+.hero-actions button:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+.hero-actions b { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 6px; font-size: 9px; }
+.hero-actions b.knowledge { color: var(--agent-knowledge); background: rgba(121,174,255,.10); }
+.hero-actions b.review { color: var(--agent-review); background: rgba(255,189,115,.10); }
+.hero-actions b.brain { color: var(--agent-brain); background: rgba(196,154,255,.10); }
+.hero-actions span { min-width: 0; display: grid; gap: 3px; }
+.hero-actions strong { color: var(--text-primary); font-size: 11px; }
+.hero-actions small { color: var(--text-tertiary); font-size: 10px; }
+.task-hints { display: flex; align-items: center; gap: 6px; margin-top: 15px; color: var(--text-tertiary); font-size: 10px; }
+.task-hints > span { margin-right: 4px; }
+.task-hints button { padding: 5px 7px; border-radius: 5px; color: var(--text-secondary); font-size: 10px; }
+.task-hints button:hover { background: var(--surface-hover); color: var(--text-primary); }
 
 .scroll-bottom {
   position: absolute;
@@ -555,7 +633,7 @@ onUnmounted(() => {
 
 @media (max-width: 740px) {
   .message-canvas { padding-top: 22px; }
-  .hero-grid { grid-template-columns: 1fr; }
-  .empty-hero h1 { font-size: 34px; }
+  .hero-actions { grid-template-columns: 1fr; }
+  .empty-hero h1 { font-size: 21px; }
 }
 </style>

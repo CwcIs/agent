@@ -5,6 +5,7 @@ import DOMPurify from "dompurify";
 import { agentMeta, agentColors } from "../shared/design-tokens";
 import InsightChipBar from "./InsightChipBar.vue";
 import type { InsightChipData } from "./InsightChip.vue";
+import ToolCallCard from "./ToolCallCard.vue";
 
 marked.setOptions({ breaks: true });
 
@@ -14,6 +15,14 @@ const props = defineProps<{
   agentId?: string;
   done?: boolean;
   insightChips?: InsightChipData[];
+  toolCalls?: Array<{
+    name: string;
+    input?: Record<string, unknown>;
+    result?: string;
+    status: "running" | "done";
+    expanded?: boolean;
+    isError?: boolean;
+  }>;
   timestamp: number;
 }>();
 
@@ -33,7 +42,7 @@ function formatTime(ts: number): string {
 </script>
 
 <template>
-  <article class="thought-block" :class="role">
+  <article class="thought-block" :class="[role, agentId]">
     <header class="block-head">
       <div class="block-identity">
         <span v-if="role === 'assistant' && agentColor" class="agent-dot" :style="{ background: agentColor.hex, boxShadow: `0 0 16px ${agentColor.hex}66` }" />
@@ -49,6 +58,18 @@ function formatTime(ts: number): string {
         <span :style="{ background: agentColor?.hex || 'var(--brand)' }" />
         正在组织回应…
       </div>
+      <div v-if="toolCalls?.length" class="tool-list">
+        <ToolCallCard
+          v-for="(tool, index) in toolCalls"
+          :key="`${tool.name}-${index}`"
+          v-model:expanded="tool.expanded"
+          :name="tool.name"
+          :input="tool.input"
+          :result="tool.result"
+          :status="tool.status"
+          :is-error="tool.isError"
+        />
+      </div>
       <InsightChipBar v-if="insightChips && insightChips.length" :chips="insightChips" class="chips" @chip-click="emit('chipClick', $event)" />
     </div>
   </article>
@@ -59,12 +80,15 @@ function formatTime(ts: number): string {
   width: min(760px, calc(100% - 32px));
   margin: 0 auto 16px;
   border: 1px solid var(--border-subtle);
-  border-radius: 24px;
-  padding: 22px;
-  background: linear-gradient(180deg, rgba(255,255,255,.058), rgba(255,255,255,.032));
-  box-shadow: 0 24px 80px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.06);
+  border-radius: 8px;
+  padding: 18px;
+  background: #13181e;
+  box-shadow: 0 14px 44px rgba(0,0,0,.16);
 }
-.thought-block.user { background: rgba(255,255,255,.028); box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
+.thought-block.knowledge { border-left: 3px solid rgba(121,174,255,.62); }
+.thought-block.review { border-left: 3px solid rgba(255,189,115,.68); }
+.thought-block.brain { border-left: 3px solid rgba(196,154,255,.62); }
+.thought-block.user { margin-top: 26px; background: #0f1419; box-shadow: none; }
 .block-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .block-identity { display: inline-flex; align-items: center; gap: 8px; color: var(--text-tertiary); font-size: 10px; font-weight: 850; letter-spacing: .13em; text-transform: uppercase; }
 time { color: var(--text-tertiary); font-size: 11px; }
@@ -76,5 +100,6 @@ time { color: var(--text-tertiary); font-size: 11px; }
 .response-content :deep(blockquote) { border-left: 2px solid var(--brand-border); margin: 1em 0; padding-left: 1em; color: var(--text-secondary); }
 .typing-line { display: inline-flex; align-items: center; gap: 9px; color: var(--text-secondary); font-size: 14px; }
 .typing-line span { width: 7px; height: 7px; border-radius: 999px; animation: pulse-glow 1.4s ease-in-out infinite; }
+.tool-list { display: grid; gap: 6px; margin-top: 14px; }
 .chips { margin-top: 16px; }
 </style>

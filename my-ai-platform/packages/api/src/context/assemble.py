@@ -394,6 +394,7 @@ def _fetch_related_notes(conn: sqlite3.Connection, user_input: str) -> str:
             JOIN notes n ON n.rowid = f.rowid
             WHERE notes_fts MATCH ?
               AND n.status = 'live'
+              AND n.knowledge_status = 'canonical'
               AND n.deleted_at IS NULL
             ORDER BY rank
             LIMIT ?

@@ -282,7 +282,9 @@ def get_graph(center_id: str = "", depth: int = 2, conn: sqlite3.Connection = De
     else:
         # 全图（限制 200 条笔记）
         rows = conn.execute(
-            "SELECT id FROM notes WHERE status='live' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 200"
+            "SELECT id FROM notes WHERE status='live' "
+            "AND knowledge_status='canonical' AND deleted_at IS NULL "
+            "ORDER BY created_at DESC LIMIT 200"
         ).fetchall()
         note_ids = {r["id"] for r in rows}
 

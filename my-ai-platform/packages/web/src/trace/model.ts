@@ -199,6 +199,8 @@ export function eventLabel(type: string): string {
     tool_end: "工具返回",
     retrieval_completed: "检索完成",
     citation_verified: "引用已验证",
+    handoff_proposed: "Agent 提议",
+    policy_decision: "门禁决策",
     handoff: "Agent 接力",
     warning: "链路告警",
     verdict: "终止判定",
@@ -212,8 +214,9 @@ export function eventLabel(type: string): string {
 export function eventTone(event: TraceEvent): "neutral" | "info" | "success" | "warning" | "danger" {
   if (event.status === "error" || event.event_type === "error") return "danger";
   if (event.status === "warning" || event.event_type === "warning") return "warning";
+  if (["ask_user", "degrade", "deny"].includes(event.status)) return "warning";
   if (["trace_end", "agent_end", "citation_verified"].includes(event.event_type)) return "success";
-  if (["llm_call", "tool_start", "tool_end", "retrieval_completed", "handoff", "verdict"].includes(event.event_type)) return "info";
+  if (["llm_call", "tool_start", "tool_end", "retrieval_completed", "handoff_proposed", "policy_decision", "handoff", "verdict"].includes(event.event_type)) return "info";
   return "neutral";
 }
 
@@ -238,6 +241,10 @@ export function eventSummary(event: TraceEvent): string {
       return `从 ${payload.candidate_count || 0} 个候选中选中 ${payload.selected?.length || 0} 条相关笔记`;
     case "handoff":
       return `${agentMeta(payload.from_agent || event.parent_agent_id).label} → ${agentMeta(payload.to_agent || event.agent_id).label}${event.name ? ` · ${event.name}` : ""}`;
+    case "handoff_proposed":
+      return `${agentMeta(event.agent_id).label} 提议调用 ${agentMeta(payload.target_agent_id || event.name).label}${payload.trigger_type === "shadow" ? " · 行内提及，未直接执行" : ""}`;
+    case "policy_decision":
+      return `${payload.outcome || event.status} · ${payload.effective_risk || event.name} · ${payload.reason || "策略已评估"}`;
     case "citation_verified":
       return `笔记 ${payload.note_id || event.name} 已通过 ${payload.method || "精确 ID"} 校验`;
     case "verdict":
@@ -261,6 +268,8 @@ export function importantEvents(events: TraceEvent[]): TraceEvent[] {
     "tool_start",
     "tool_end",
     "retrieval_completed",
+    "handoff_proposed",
+    "policy_decision",
     "handoff",
     "warning",
     "error",
@@ -350,10 +359,14 @@ export function buildTraceSpans(events: TraceEvent[]): TraceSpan[] {
       continue;
     }
 
-    if (["retrieval_completed", "handoff", "warning", "error", "verdict"].includes(event.event_type)) {
+    if (["retrieval_completed", "handoff_proposed", "policy_decision", "handoff", "warning", "error", "verdict"].includes(event.event_type)) {
       spans.push({
         id: `event:${event.id}`,
-        kind: event.event_type === "retrieval_completed" ? "retrieval" : event.event_type === "handoff" ? "handoff" : "event",
+        kind: event.event_type === "retrieval_completed"
+          ? "retrieval"
+          : ["handoff_proposed", "policy_decision", "handoff"].includes(event.event_type)
+            ? "handoff"
+            : "event",
         label: eventLabel(event.event_type),
         agentId: event.agent_id,
         startMs: eventTime(event),

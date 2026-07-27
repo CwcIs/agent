@@ -23,7 +23,8 @@ def gather(conn: sqlite3.Connection) -> dict:
 
     # ── 1. 兴趣分布 ──
     tag_rows = conn.execute(
-        "SELECT tags_json FROM notes WHERE status='live' AND deleted_at IS NULL"
+        "SELECT tags_json FROM notes WHERE status='live' "
+        "AND knowledge_status='canonical' AND deleted_at IS NULL"
     ).fetchall()
     tag_counts: dict[str, int] = defaultdict(int)
     for r in tag_rows:
@@ -70,7 +71,8 @@ def gather(conn: sqlite3.Connection) -> dict:
 
     # ── 6. 笔记总量统计 ──
     total_live = conn.execute(
-        "SELECT COUNT(*) FROM notes WHERE status='live' AND deleted_at IS NULL"
+        "SELECT COUNT(*) FROM notes WHERE status='live' "
+        "AND knowledge_status='canonical' AND deleted_at IS NULL"
     ).fetchone()[0]
     total_archived = conn.execute(
         "SELECT COUNT(*) FROM notes WHERE status='archived' AND deleted_at IS NULL"
@@ -128,7 +130,9 @@ def gather(conn: sqlite3.Connection) -> dict:
 def _analyze_thinking_style(conn: sqlite3.Connection) -> dict:
     """启发式分析思考风格：基于内容关键词统计。"""
     rows = conn.execute(
-        "SELECT content FROM notes WHERE status='live' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 100"
+        "SELECT content FROM notes WHERE status='live' "
+        "AND knowledge_status='canonical' AND deleted_at IS NULL "
+        "ORDER BY created_at DESC LIMIT 100"
     ).fetchall()
 
     if not rows:

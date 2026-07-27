@@ -9,6 +9,7 @@ from typing import Optional
 
 from langchain_core.tools import tool
 
+from src.lib.trace import get_trace_context
 from src.lib.embeddings import search_similar, upsert_embedding
 from src.tools._shared import (
     TOOL_TIMEOUT,
@@ -135,9 +136,17 @@ def build_import_tools(conn: sqlite3.Connection) -> list:
         word_count = len(content.split())
 
         conn.execute(
-            "INSERT INTO notes (id, title, content, tags_json, source_file, source_type, word_count) "
-            "VALUES (?, ?, ?, ?, ?, 'file', ?)",
-            (note_id, title[:200], content, json.dumps(tags_list, ensure_ascii=False), filename, word_count),
+            "INSERT INTO notes (id, title, content, tags_json, source_file, source_type, word_count, knowledge_status, origin_session_id) "
+            "VALUES (?, ?, ?, ?, ?, 'file', ?, 'pending_review', ?)",
+            (
+                note_id,
+                title[:200],
+                content,
+                json.dumps(tags_list, ensure_ascii=False),
+                filename,
+                word_count,
+                get_trace_context().session_id,
+            ),
         )
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         try:
@@ -156,7 +165,8 @@ def build_import_tools(conn: sqlite3.Connection) -> list:
         task.add_done_callback(_task_done_callback)
 
         return json.dumps({
-            "status": "ok", "note_id": note_id, "title": title[:200],
+            "status": "pending_review", "note_id": note_id, "title": title[:200],
+            "knowledge_status": "pending_review",
             "word_count": word_count, "source_file": filename,
         }, ensure_ascii=False)
 
@@ -218,9 +228,17 @@ def build_import_tools(conn: sqlite3.Connection) -> list:
         tags_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
 
         conn.execute(
-            "INSERT INTO notes (id, title, content, tags_json, source_url, source_type, word_count) "
-            "VALUES (?, ?, ?, ?, ?, 'web', ?)",
-            (note_id, title[:200], content, json.dumps(tags_list, ensure_ascii=False), url, len(content.split())),
+            "INSERT INTO notes (id, title, content, tags_json, source_url, source_type, word_count, knowledge_status, origin_session_id) "
+            "VALUES (?, ?, ?, ?, ?, 'web', ?, 'pending_review', ?)",
+            (
+                note_id,
+                title[:200],
+                content,
+                json.dumps(tags_list, ensure_ascii=False),
+                url,
+                len(content.split()),
+                get_trace_context().session_id,
+            ),
         )
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         conn.execute(
@@ -236,9 +254,9 @@ def build_import_tools(conn: sqlite3.Connection) -> list:
         task.add_done_callback(_task_done_callback)
 
         return json.dumps({
-            "status": "ok", "note_id": note_id, "title": title[:200],
+            "status": "pending_review", "note_id": note_id, "title": title[:200],
+            "knowledge_status": "pending_review",
             "word_count": len(content.split()), "source_url": url,
         }, ensure_ascii=False)
 
     return [web_search, import_webpage, import_file]
-

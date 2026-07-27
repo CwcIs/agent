@@ -13,6 +13,7 @@ from src.lib.embeddings import search_similar, upsert_embedding
 from src.tools._shared import (
     TOOL_TIMEOUT,
     _background_embed,
+    _background_tasks,
     _create_wikilink_edges,
     _parse_wikilinks,
     _resolve_title_to_id,
@@ -25,7 +26,7 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
         """
         搜索笔记库，返回最多 k 条相关笔记（JSON 字符串）。
         使用语义搜索 + 关键词检索 → 统一多因子排序（Bayesian + Decay + Graph）。
-        只返回 status='live' 的笔记。
+        只返回生命周期有效且 knowledge_status='canonical' 的正式知识。
         """
         from src.lib.ranker import rank_candidates, record_event
         from src.lib.trace import content_fingerprint, record_trace_event
@@ -48,7 +49,8 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
                 placeholders = ",".join("?" * len(ids))
                 rows = conn.execute(
                     f"SELECT id, title, content, tags_json, created_at FROM notes "
-                    f"WHERE id IN ({placeholders}) AND status='live' AND deleted_at IS NULL",
+                    f"WHERE id IN ({placeholders}) AND status='live' "
+                    f"AND knowledge_status='canonical' AND deleted_at IS NULL",
                     ids,
                 ).fetchall()
                 for r in rows:
@@ -69,6 +71,7 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
                 JOIN notes n ON n.rowid = f.rowid
                 WHERE notes_fts MATCH ?
                   AND n.status = 'live'
+                  AND n.knowledge_status = 'canonical'
                   AND n.deleted_at IS NULL
                 ORDER BY rank
                 LIMIT ?
@@ -147,62 +150,56 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
     @tool
     async def save_note(title: str, content: str, tags: Optional[str] = "", supersedes_id: Optional[str] = "") -> str:
         """
-        把一条新笔记保存到笔记库。
+        把 Agent 生成的内容保存为待人工确认的候选笔记。
         tags 用逗号分隔，例如 '产品,增长'。
         内容中的 [[笔记标题]] 语法会自动创建双链关系。
         supersedes_id 可选：传入旧笔记 ID 表示本笔记替代/升级了旧笔记，会自动创建 evolved_from 关系并将旧笔记标记为 superseded。
-        返回新笔记的 id 和创建的双链边。
+        候选知识不会进入正式 RAG；用户发布后才创建正式关系并可被召回。
         """
         note_id = str(uuid.uuid4())
         tags_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
+        from src.lib.trace import get_trace_context
+        origin_session_id = get_trace_context().session_id
         conn.execute(
             """
-            INSERT INTO notes (id, title, content, tags_json)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO notes
+                (id, title, content, tags_json, source_type,
+                 knowledge_status, proposed_supersedes_id, origin_session_id)
+            VALUES (?, ?, ?, ?, 'agent_generated', 'pending_review', ?, ?)
             """,
-            (note_id, title, content, json.dumps(tags_list, ensure_ascii=False)),
+            (
+                note_id,
+                title,
+                content,
+                json.dumps(tags_list, ensure_ascii=False),
+                supersedes_id.strip() if supersedes_id else None,
+                origin_session_id,
+            ),
         )
         conn.commit()
 
-        # ── [[wikilink]] 自动解析 → 写入 edges ──
-        wikilink_titles = _parse_wikilinks(content)
-        edges_created = _create_wikilink_edges(conn, note_id, wikilink_titles)
-
-        # ── Phase 4A-1：supersedes_id → evolved_from edge + 标记旧笔记 ──
+        # G4：候选阶段不创建正式边，也不修改被替代笔记。
+        # publish_note_candidate() 会在人工确认后完成这些副作用。
+        edges_created: list[dict] = []
         superseded_title = ""
         if supersedes_id and supersedes_id.strip():
             old_row = conn.execute(
-                "SELECT id, title FROM notes WHERE id = ? AND deleted_at IS NULL",
+                """SELECT id, title FROM notes
+                   WHERE id = ? AND knowledge_status='canonical'
+                     AND deleted_at IS NULL""",
                 (supersedes_id.strip(),),
             ).fetchone()
             if old_row:
                 superseded_title = old_row["title"]
-                # 标记旧笔记为 superseded
-                conn.execute(
-                    "UPDATE notes SET status='superseded', superseded_by=?, updated_at=datetime('now','localtime') WHERE id=?",
-                    (note_id, old_row["id"]),
-                )
-                # 创建 evolved_from edge
-                edge_id = str(uuid.uuid4())
-                try:
-                    conn.execute(
-                        """INSERT OR IGNORE INTO edges
-                           (id, from_id, to_id, relation, confidence, source, evidence, status)
-                           VALUES (?, ?, ?, 'evolved_from', 1.0, 'manual', ?, 'confirmed')""",
-                        (edge_id, old_row["id"], note_id, f"superseded by note {note_id}"),
-                    )
-                    conn.commit()
-                    edges_created.append({"id": edge_id, "from_id": old_row["id"], "to_id": note_id, "relation": "evolved_from", "to_title": title})
-                except Exception:
-                    pass
-            conn.commit()
 
-        # 后台异步写入 embedding + 相似度检测，不阻塞 save_note 返回
+        # 可以预计算 embedding，但检索层仍会过滤掉非 canonical 知识。
         task = asyncio.create_task(_background_embed(conn, note_id, title, content))
         _background_tasks.add(task)
         task.add_done_callback(_task_done_callback)
         return json.dumps({
-            "status": "ok", "id": note_id, "title": title,
+            "status": "pending_review", "id": note_id, "title": title,
+            "knowledge_status": "pending_review",
+            "message": "候选笔记已创建，人工确认后才会进入正式知识库。",
             "edges_created": len(edges_created),
             "superseded_title": superseded_title,
         }, ensure_ascii=False)
@@ -215,30 +212,36 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
         用户说"看一下那条笔记"、"展开笔记 xxx"、"读一下 xxx"时优先调用。
         返回 JSON：{id, title, content, tags, status, created_at, updated_at}
         """
-        # 支持前缀匹配
+        from src.lib.trace import get_trace_context
+        origin_session_id = get_trace_context().session_id
+        visibility_sql = (
+            "(knowledge_status='canonical' OR origin_session_id=?) "
+            "AND deleted_at IS NULL"
+        )
+        # 支持前缀匹配；候选知识只对产生它的当前 session 可见。
         if len(note_id) >= 8:
             rows = conn.execute(
-                "SELECT id, title, content, tags_json, status, created_at, updated_at "
-                "FROM notes WHERE id LIKE ? AND deleted_at IS NULL LIMIT 2",
-                (note_id + "%",),
+                "SELECT id, title, content, tags_json, status, knowledge_status, created_at, updated_at "
+                f"FROM notes WHERE id LIKE ? AND {visibility_sql} LIMIT 2",
+                (note_id + "%", origin_session_id),
             ).fetchall()
             if len(rows) == 1:
                 r = rows[0]
             elif len(rows) > 1:
                 # 多个匹配，要求更精确的 ID
                 row = conn.execute(
-                    "SELECT id, title, content, tags_json, status, created_at, updated_at "
-                    "FROM notes WHERE id = ? AND deleted_at IS NULL",
-                    (note_id,),
+                    "SELECT id, title, content, tags_json, status, knowledge_status, created_at, updated_at "
+                    f"FROM notes WHERE id = ? AND {visibility_sql}",
+                    (note_id, origin_session_id),
                 ).fetchone()
                 r = row
             else:
                 r = None
         else:
             r = conn.execute(
-                "SELECT id, title, content, tags_json, status, created_at, updated_at "
-                "FROM notes WHERE id = ? AND deleted_at IS NULL",
-                (note_id,),
+                "SELECT id, title, content, tags_json, status, knowledge_status, created_at, updated_at "
+                f"FROM notes WHERE id = ? AND {visibility_sql}",
+                (note_id, origin_session_id),
             ).fetchone()
 
         if not r:
@@ -255,19 +258,12 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
         用户说"归档这条"、"这条笔记过时了"时调用。
         返回 JSON：{status: "archived", id: note_id}
         """
-        row = conn.execute(
-            "SELECT id FROM notes WHERE id = ? AND deleted_at IS NULL AND status != 'archived'",
-            (note_id,),
-        ).fetchone()
-        if not row:
-            return json.dumps({"status": "error", "message": f"笔记 {note_id} 不存在、已删除或已归档"}, ensure_ascii=False)
-
-        conn.execute(
-            "UPDATE notes SET status='archived', updated_at=datetime('now','localtime') WHERE id=?",
-            (note_id,),
-        )
-        conn.commit()
-        return json.dumps({"status": "archived", "id": note_id}, ensure_ascii=False)
+        return json.dumps({
+            "status": "approval_required",
+            "action": "archive_note",
+            "note_id": note_id,
+            "message": "归档会修改正式知识，请在笔记界面确认执行。",
+        }, ensure_ascii=False)
 
     @tool
     def get_notes_summary() -> str:
@@ -276,16 +272,19 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
         用户问"我有什么笔记"、"笔记概况"、"笔记库里有什么"时优先调用此工具。
         """
         total = conn.execute(
-            "SELECT COUNT(*) FROM notes WHERE status='live' AND deleted_at IS NULL"
+            "SELECT COUNT(*) FROM notes WHERE status='live' "
+            "AND knowledge_status='canonical' AND deleted_at IS NULL"
         ).fetchone()[0]
 
         recent = conn.execute(
-            "SELECT COUNT(*) FROM notes WHERE status='live' AND deleted_at IS NULL "
+            "SELECT COUNT(*) FROM notes WHERE status='live' "
+            "AND knowledge_status='canonical' AND deleted_at IS NULL "
             "AND created_at >= datetime('now', '-7 days')"
         ).fetchone()[0]
 
         tag_rows = conn.execute(
-            "SELECT tags_json FROM notes WHERE status='live' AND deleted_at IS NULL"
+            "SELECT tags_json FROM notes WHERE status='live' "
+            "AND knowledge_status='canonical' AND deleted_at IS NULL"
         ).fetchall()
         tag_counts: dict[str, int] = {}
         for row in tag_rows:
@@ -326,7 +325,8 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
         if not ids:
             rows = conn.execute(
                 "SELECT n.id FROM notes_fts f JOIN notes n ON n.rowid = f.rowid "
-                "WHERE notes_fts MATCH ? AND n.status='live' AND n.deleted_at IS NULL LIMIT ?",
+                "WHERE notes_fts MATCH ? AND n.status='live' "
+                "AND n.knowledge_status='canonical' AND n.deleted_at IS NULL LIMIT ?",
                 (topic, k),
             ).fetchall()
             ids = [r[0] for r in rows]
@@ -341,7 +341,7 @@ def build_note_tools(conn: sqlite3.Connection) -> list:
         placeholders = ",".join("?" * len(ids))
         notes = conn.execute(
             f"SELECT id, title, content FROM notes WHERE id IN ({placeholders}) "
-            f"AND status='live' AND deleted_at IS NULL",
+            f"AND status='live' AND knowledge_status='canonical' AND deleted_at IS NULL",
             ids,
         ).fetchall()
 

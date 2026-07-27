@@ -122,7 +122,7 @@ def _build_sse_generator(user_input: str, session_id: str, prompt_version: str, 
 class ChatStreamBody(BaseModel):
     input: str
     session_id: str = ""
-    prompt_version: str = "v2"
+    prompt_version: str = "v3"
 
 
 # ── POST /chat/stream ─────────────────────────────────────
@@ -144,7 +144,7 @@ async def chat_stream_post(body: ChatStreamBody):
 async def chat_stream_get(
     input: str = "",
     session_id: str = "",
-    prompt_version: str = "v2",
+    prompt_version: str = "v3",
 ):
     """GET 版本 — 保留兼容，短文本仍可用。"""
     if not input:

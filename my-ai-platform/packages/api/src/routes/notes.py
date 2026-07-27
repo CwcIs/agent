@@ -1,34 +1,43 @@
-"""Note CRUD routes."""
+"""Note CRUD and candidate knowledge publication routes."""
 
+import asyncio
 import json
 import sqlite3
 import uuid
-from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from langchain_core.messages import HumanMessage, SystemMessage
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sse_starlette.sse import EventSourceResponse
 
+from src.lib.knowledge_lifecycle import publish_candidate, reject_candidate
 from src.routes.dependencies import get_conn
+from src.tools._shared import (
+    _background_embed,
+    _create_wikilink_edges,
+    _parse_wikilinks,
+    _task_done_callback,
+)
 
 router = APIRouter()
+
+
+def _serialize_note(row: sqlite3.Row) -> dict:
+    note = dict(row)
+    note["tags"] = json.loads(note.pop("tags_json", "[]"))
+    return note
+
 
 @router.get("/notes")
 def list_notes(conn: sqlite3.Connection = Depends(get_conn)):
     rows = conn.execute(
-        "SELECT id, title, content, tags_json, status, created_at "
-        "FROM notes WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 50"
+        """SELECT id, title, content, tags_json, status, knowledge_status,
+                  source_type, created_at
+           FROM notes
+           WHERE deleted_at IS NULL
+           ORDER BY created_at DESC LIMIT 100"""
     ).fetchall()
-    result = []
-    for r in rows:
-        d = dict(r)
-        d["tags"] = json.loads(d.pop("tags_json", "[]"))
-        result.append(d)
-    return {"notes": result}
+    return {"notes": [_serialize_note(row) for row in rows]}
 
 
-# ── POST /notes ───────────────────────────────────────────
 class NoteIn(BaseModel):
     title: str
     content: str
@@ -36,38 +45,106 @@ class NoteIn(BaseModel):
 
 
 @router.post("/notes", status_code=201)
-def create_note(body: NoteIn, conn: sqlite3.Connection = Depends(get_conn)):
-    from src.tools import make_tools
-    tools = make_tools(conn)
-    save = next(t for t in tools if t.name == "save_note")
-    result = save.invoke({"title": body.title, "content": body.content, "tags": body.tags})
-    return json.loads(result)
+async def create_note(body: NoteIn, conn: sqlite3.Connection = Depends(get_conn)):
+    """A direct user write is canonical because the user supplied the content."""
+    note_id = str(uuid.uuid4())
+    tags = [tag.strip() for tag in body.tags.split(",") if tag.strip()]
+    conn.execute(
+        """INSERT INTO notes
+           (id, title, content, tags_json, source_type, knowledge_status, published_at)
+           VALUES (?, ?, ?, ?, 'user', 'canonical', datetime('now','localtime'))""",
+        (note_id, body.title, body.content, json.dumps(tags, ensure_ascii=False)),
+    )
+    conn.commit()
+    _create_wikilink_edges(conn, note_id, _parse_wikilinks(body.content))
+    task = asyncio.create_task(_background_embed(conn, note_id, body.title, body.content))
+    task.add_done_callback(_task_done_callback)
+    return {
+        "status": "ok",
+        "id": note_id,
+        "title": body.title,
+        "knowledge_status": "canonical",
+    }
 
 
-# ── DELETE /notes/{id} ────────────────────────────────────
 @router.delete("/notes/{note_id}", status_code=200)
 def delete_note(note_id: str, conn: sqlite3.Connection = Depends(get_conn)):
-    row = conn.execute("SELECT id FROM notes WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone()
+    row = conn.execute(
+        "SELECT id FROM notes WHERE id = ? AND deleted_at IS NULL",
+        (note_id,),
+    ).fetchone()
     if not row:
         raise HTTPException(404, "note not found")
-    conn.execute("UPDATE notes SET deleted_at = datetime('now','localtime') WHERE id = ?", (note_id,))
+    conn.execute(
+        "UPDATE notes SET deleted_at=datetime('now','localtime') WHERE id=?",
+        (note_id,),
+    )
     conn.commit()
     return {"status": "deleted", "id": note_id}
 
 
-# ── PATCH /notes/{id} ─────────────────────────────────────
 class NotePatch(BaseModel):
-    status: str  # archived | live
+    title: str | None = None
+    content: str | None = None
+    status: str | None = None
 
 
 @router.patch("/notes/{note_id}", status_code=200)
-def patch_note(note_id: str, body: NotePatch, conn: sqlite3.Connection = Depends(get_conn)):
-    if body.status not in ("archived", "live"):
-        raise HTTPException(400, "status must be archived or live")
-    row = conn.execute("SELECT id FROM notes WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone()
+def patch_note(
+    note_id: str,
+    body: NotePatch,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    row = conn.execute(
+        "SELECT id, title, content, status FROM notes WHERE id=? AND deleted_at IS NULL",
+        (note_id,),
+    ).fetchone()
     if not row:
         raise HTTPException(404, "note not found")
-    conn.execute("UPDATE notes SET status = ? WHERE id = ?", (body.status, note_id))
-    conn.commit()
-    return {"status": body.status, "id": note_id}
+    if body.status is not None and body.status not in ("archived", "live"):
+        raise HTTPException(400, "status must be archived or live")
 
+    title = body.title if body.title is not None else row["title"]
+    content = body.content if body.content is not None else row["content"]
+    status = body.status if body.status is not None else row["status"]
+    conn.execute(
+        """UPDATE notes
+           SET title=?, content=?, status=?, updated_at=datetime('now','localtime')
+           WHERE id=?""",
+        (title, content, status, note_id),
+    )
+    conn.commit()
+    return {
+        "status": status,
+        "id": note_id,
+        "title": title,
+        "content": content,
+    }
+
+
+@router.post("/notes/{note_id}/publish")
+def publish_note_candidate(
+    note_id: str,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    try:
+        return publish_candidate(conn, note_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, "failed to publish candidate") from exc
+
+
+@router.post("/notes/{note_id}/reject")
+def reject_note_candidate(
+    note_id: str,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    try:
+        return reject_candidate(conn, note_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc

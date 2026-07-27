@@ -9,6 +9,7 @@ interface Note {
   content: string;
   tags: string[];
   status: string;
+  knowledge_status?: string;
   created_at: string;
   source_url?: string;
   source_file?: string;
@@ -175,6 +176,28 @@ async function deleteNote() {
   } catch { /* ignore */ }
 }
 
+async function publishCandidate() {
+  if (!props.note || !confirm(`确认将「${props.note.title}」发布为正式知识？`)) return;
+  try {
+    const resp = await fetch(`/notes/${props.note.id}/publish`, { method: "POST" });
+    if (resp.ok) {
+      props.note.knowledge_status = "canonical";
+      emit("updated");
+    }
+  } catch { /* ignore */ }
+}
+
+async function rejectCandidate() {
+  if (!props.note || !confirm(`拒绝候选知识「${props.note.title}」？`)) return;
+  try {
+    const resp = await fetch(`/notes/${props.note.id}/reject`, { method: "POST" });
+    if (resp.ok) {
+      props.note.knowledge_status = "revoked";
+      emit("updated");
+    }
+  } catch { /* ignore */ }
+}
+
 function copyContent() {
   if (!props.note) return;
   navigator.clipboard.writeText(props.note.content);
@@ -250,6 +273,20 @@ function renderMarkdown(text: string): string {
 
         <!-- 元信息 -->
         <div class="flex items-center gap-2 flex-wrap">
+          <span
+            v-if="note.knowledge_status === 'pending_review'"
+            class="text-[10px] px-1.5 py-0.5 rounded-full font-medium border"
+            style="background: rgba(245,185,66,0.10); color: #F5B942; border-color: rgba(245,185,66,0.18)"
+          >
+            待人工确认
+          </span>
+          <span
+            v-else-if="note.knowledge_status === 'revoked'"
+            class="text-[10px] px-1.5 py-0.5 rounded-full font-medium border"
+            style="background: rgba(154,164,178,0.06); color: #9AA4B2; border-color: rgba(154,164,178,0.10)"
+          >
+            已拒绝
+          </span>
           <span
             class="text-[10px] px-1.5 py-0.5 rounded-full font-medium border"
             :style="{
@@ -381,6 +418,19 @@ function renderMarkdown(text: string): string {
 
       <!-- 底部操作栏 -->
       <div class="px-4 py-3 border-t flex items-center gap-2 shrink-0" style="border-color: var(--border-subtle)">
+        <template v-if="note.knowledge_status === 'pending_review'">
+          <button
+            class="flex-1 text-[11px] px-2.5 py-1.5 rounded-lg transition-all hover:brightness-110 border"
+            style="background: rgba(112,224,163,0.10); color: #70E0A3; border-color: rgba(112,224,163,0.18)"
+            @click="publishCandidate"
+          >发布为正式知识</button>
+          <button
+            class="text-[11px] px-2.5 py-1.5 rounded-lg transition-all hover:brightness-110 border"
+            style="background: rgba(255,107,107,0.08); color: #FF6B6B; border-color: rgba(255,107,107,0.12)"
+            @click="rejectCandidate"
+          >拒绝</button>
+        </template>
+        <template v-else>
         <button
           class="flex-1 text-[11px] px-2.5 py-1.5 rounded-lg transition-all hover:brightness-110 border"
           style="background: rgba(255,255,255,0.04); color: var(--text-muted); border-color: rgba(255,255,255,0.06)"
@@ -402,6 +452,7 @@ function renderMarkdown(text: string): string {
           style="background: rgba(255,107,107,0.08); color: #FF6B6B; border-color: rgba(255,107,107,0.12)"
           @click="deleteNote"
         >删除</button>
+        </template>
       </div>
     </template>
   </aside>

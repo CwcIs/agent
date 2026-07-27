@@ -44,7 +44,9 @@ def build_knowledge_tools(conn: sqlite3.Connection) -> list:
         else:
             # 取最近 30 条 live 笔记作为候选池
             rows = conn.execute(
-                "SELECT id FROM notes WHERE status='live' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 30"
+                "SELECT id FROM notes WHERE status='live' "
+                "AND knowledge_status='canonical' AND deleted_at IS NULL "
+                "ORDER BY created_at DESC LIMIT 30"
             ).fetchall()
             candidate_ids = [r["id"] for r in rows]
 
@@ -54,7 +56,9 @@ def build_knowledge_tools(conn: sqlite3.Connection) -> list:
         # 生成候选对（tag overlap 筛选）
         placeholders = ",".join("?" * len(candidate_ids))
         notes = conn.execute(
-            f"SELECT id, title, content, tags_json, created_at FROM notes WHERE id IN ({placeholders}) AND status='live' AND deleted_at IS NULL",
+            f"SELECT id, title, content, tags_json, created_at FROM notes "
+            f"WHERE id IN ({placeholders}) AND status='live' "
+            f"AND knowledge_status='canonical' AND deleted_at IS NULL",
             candidate_ids,
         ).fetchall()
 
@@ -410,4 +414,3 @@ def build_knowledge_tools(conn: sqlite3.Connection) -> list:
         }, ensure_ascii=False)
 
     return [get_note_relations, detect_collisions, suggest_tags, suggest_relation, accept_suggestion, reject_suggestion, merge_tags, list_tag_aliases]
-

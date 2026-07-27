@@ -59,7 +59,8 @@ def build_review_tools(conn: sqlite3.Connection) -> list:
         rows = conn.execute(
             """SELECT id, title, review_count, review_interval, last_reviewed_at, created_at
                FROM notes
-               WHERE status = 'live' AND deleted_at IS NULL
+               WHERE status = 'live' AND knowledge_status='canonical'
+                 AND deleted_at IS NULL
                  AND last_reviewed_at IS NOT NULL
                ORDER BY
                  CASE WHEN last_reviewed_at IS NOT NULL
@@ -101,7 +102,9 @@ def build_review_tools(conn: sqlite3.Connection) -> list:
         """
         # 获取最近 50 条笔记作为分析样本
         rows = conn.execute(
-            "SELECT title, content, tags_json FROM notes WHERE status='live' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 50"
+            "SELECT title, content, tags_json FROM notes WHERE status='live' "
+            "AND knowledge_status='canonical' AND deleted_at IS NULL "
+            "ORDER BY created_at DESC LIMIT 50"
         ).fetchall()
         if len(rows) < 3:
             return json.dumps({"gaps": [], "message": "笔记太少，积累更多后再来探索知识缺口"}, ensure_ascii=False)
@@ -172,7 +175,9 @@ def build_review_tools(conn: sqlite3.Connection) -> list:
         返回 JSON：{ suggestions: [{topic, note_count, note_ids}] }
         """
         rows = conn.execute(
-            "SELECT tags_json, id, title FROM notes WHERE status='live' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 200"
+            "SELECT tags_json, id, title FROM notes WHERE status='live' "
+            "AND knowledge_status='canonical' AND deleted_at IS NULL "
+            "ORDER BY created_at DESC LIMIT 200"
         ).fetchall()
 
         tag_clusters: dict[str, list[str]] = {}
@@ -195,4 +200,3 @@ def build_review_tools(conn: sqlite3.Connection) -> list:
     # ── Phase 7.2: Calendar tools ──
 
     return [review_note, get_due_reviews, suggest_gaps, suggest_writing]
-

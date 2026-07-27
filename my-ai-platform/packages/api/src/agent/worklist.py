@@ -26,19 +26,53 @@ def save_handoff(
     mention_content: str,
     tool_events: list[dict],
     agent_a_id: str = "",
+    proposal_id: str = "",
 ) -> str:
-    """持久化一个 pending A2A handoff，返回 worklist id。agent_a_id 记录触发方。"""
+    """Persist one authorized handoff with an idempotent execution record."""
+    idempotency_key = ""
+    if proposal_id:
+        from src.agent.governance import ensure_execution
+
+        _, idempotency_key, execution_status = ensure_execution(
+            conn,
+            proposal_id=proposal_id,
+            action_type="handoff",
+            actor_id="orchestrator",
+            request_payload={
+                "session_id": session_id,
+                "source_agent_id": agent_a_id,
+                "target_agent_id": agent_id,
+                "depth": depth,
+                "objective": mention_content,
+            },
+        )
+        existing = conn.execute(
+            "SELECT id FROM worklist WHERE idempotency_key=?",
+            (idempotency_key,),
+        ).fetchone()
+        if existing:
+            return existing["id"]
+        if execution_status == "succeeded":
+            existing = conn.execute(
+                "SELECT id FROM worklist WHERE proposal_id=? ORDER BY created_at LIMIT 1",
+                (proposal_id,),
+            ).fetchone()
+            return existing["id"] if existing else ""
+
     wid = str(uuid.uuid4())
     conn.execute(
         """INSERT INTO worklist
            (id, session_id, agent_id, depth, status,
-            user_input, agent_a_output, mention_content, tool_events_json, agent_a_id)
-           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)""",
+            user_input, agent_a_output, mention_content, tool_events_json,
+            agent_a_id, proposal_id, idempotency_key)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)""",
         (
             wid, session_id, agent_id, depth,
             user_input, agent_a_output, mention_content,
             json.dumps(tool_events, ensure_ascii=False),
             agent_a_id,
+            proposal_id,
+            idempotency_key,
         ),
     )
     conn.commit()
@@ -51,11 +85,20 @@ def mark_running(conn: sqlite3.Connection, wid: str) -> None:
         (wid,),
     )
     conn.commit()
+    _sync_execution(conn, wid, "running")
 
 
 def mark_done(conn: sqlite3.Connection, wid: str) -> None:
     conn.execute(
         "UPDATE worklist SET status='done', updated_at=datetime('now','localtime') WHERE id=?",
+        (wid,),
+    )
+    conn.commit()
+    _sync_execution(conn, wid, "succeeded", result={"work_id": wid})
+    conn.execute(
+        """UPDATE handoff_proposals SET status='executed',
+           updated_at=datetime('now','localtime')
+           WHERE id=(SELECT proposal_id FROM worklist WHERE id=?) AND id != ''""",
         (wid,),
     )
     conn.commit()
@@ -67,6 +110,32 @@ def mark_failed(conn: sqlite3.Connection, wid: str, error_msg: str = "") -> None
         (error_msg, wid),
     )
     conn.commit()
+    _sync_execution(conn, wid, "failed", error_msg=error_msg)
+
+
+def _sync_execution(
+    conn: sqlite3.Connection,
+    wid: str,
+    status: str,
+    *,
+    result: dict | None = None,
+    error_msg: str = "",
+) -> None:
+    row = conn.execute(
+        "SELECT idempotency_key FROM worklist WHERE id=?",
+        (wid,),
+    ).fetchone()
+    if not row or not row["idempotency_key"]:
+        return
+    from src.agent.governance import mark_execution
+
+    mark_execution(
+        conn,
+        row["idempotency_key"],
+        status,
+        result=result,
+        error_msg=error_msg,
+    )
 
 
 # ── Read operations ───────────────────────────────────────

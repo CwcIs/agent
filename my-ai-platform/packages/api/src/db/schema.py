@@ -1,5 +1,5 @@
 # ============================================================
-# SQLite 17 表 Schema（Phase 1-7）
+# SQLite Schema（知识工作台 + Governance Gate v2）
 #
 # 表：
 #   1. notes           — 笔记主表（Phase 5.3: +source_url/source_file/source_type/word_count）
@@ -57,6 +57,16 @@ def init_db(conn: sqlite3.Connection) -> None:
             superseded_by  TEXT REFERENCES notes(id),
             confidence     REAL,
             schema_version INTEGER NOT NULL DEFAULT 1,
+            knowledge_status TEXT NOT NULL DEFAULT 'canonical'
+                               CHECK(knowledge_status IN (
+                                   'draft','pending_review','canonical',
+                                   'superseded','revoked','expired'
+                               )),
+            proposed_supersedes_id TEXT,
+            origin_session_id TEXT NOT NULL DEFAULT '',
+            reviewed_by    TEXT NOT NULL DEFAULT '',
+            reviewed_at    TEXT,
+            published_at   TEXT,
             created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             updated_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             deleted_at     TEXT
@@ -316,6 +326,77 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_worklist_session
             ON worklist(session_id, status);
 
+        -- Governance G2：mention 只创建 proposal，不直接代表执行授权
+        CREATE TABLE IF NOT EXISTS handoff_proposals (
+            id                          TEXT PRIMARY KEY,
+            trace_id                    TEXT NOT NULL DEFAULT '',
+            phase_trace_id              TEXT NOT NULL DEFAULT '',
+            session_id                  TEXT NOT NULL,
+            source_agent_id             TEXT NOT NULL,
+            target_agent_id             TEXT NOT NULL,
+            objective                   TEXT NOT NULL DEFAULT '',
+            data_sensitivity            TEXT NOT NULL DEFAULT 'normal'
+                                           CHECK(data_sensitivity IN ('normal','sensitive')),
+            input_refs_json             TEXT NOT NULL DEFAULT '[]',
+            requested_capabilities_json TEXT NOT NULL DEFAULT '[]',
+            trigger_type                TEXT NOT NULL DEFAULT 'explicit'
+                                           CHECK(trigger_type IN ('explicit','shadow')),
+            depth                       INTEGER NOT NULL DEFAULT 0,
+            proposal_hash               TEXT NOT NULL,
+            status                      TEXT NOT NULL DEFAULT 'proposed'
+                                           CHECK(status IN (
+                                               'proposed','allow','ask_user',
+                                               'degrade','deny','executed','expired'
+                                           )),
+            policy_version              TEXT NOT NULL DEFAULT '',
+            decision_reason             TEXT NOT NULL DEFAULT '',
+            created_at                  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at                  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_handoff_proposals_trace
+            ON handoff_proposals(trace_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_handoff_proposals_session
+            ON handoff_proposals(session_id, status);
+
+        -- Governance Policy Plane：保留每次确定性策略判断
+        CREATE TABLE IF NOT EXISTS policy_decisions (
+            id              TEXT PRIMARY KEY,
+            proposal_id     TEXT NOT NULL REFERENCES handoff_proposals(id),
+            policy_version  TEXT NOT NULL,
+            outcome         TEXT NOT NULL
+                                CHECK(outcome IN ('allow','ask_user','degrade','deny')),
+            effective_risk  TEXT NOT NULL CHECK(effective_risk IN ('R0','R1','R2','R3')),
+            reason          TEXT NOT NULL,
+            dimensions_json TEXT NOT NULL DEFAULT '{}',
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_policy_decisions_proposal
+            ON policy_decisions(proposal_id, created_at);
+
+        -- Governance Execution Plane：审批绑定、幂等键与真实执行结果
+        CREATE TABLE IF NOT EXISTS execution_ledger (
+            id              TEXT PRIMARY KEY,
+            proposal_id     TEXT NOT NULL DEFAULT '',
+            idempotency_key TEXT NOT NULL UNIQUE,
+            action_type     TEXT NOT NULL,
+            actor_id        TEXT NOT NULL DEFAULT 'orchestrator',
+            request_hash    TEXT NOT NULL,
+            request_json    TEXT NOT NULL DEFAULT '{}',
+            status          TEXT NOT NULL DEFAULT 'pending'
+                                CHECK(status IN (
+                                    'pending','running','succeeded',
+                                    'failed','compensated'
+                                )),
+            result_json     TEXT NOT NULL DEFAULT '{}',
+            error_msg       TEXT NOT NULL DEFAULT '',
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            started_at      TEXT,
+            completed_at    TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_execution_ledger_proposal
+            ON execution_ledger(proposal_id, created_at);
+
     """)
 
     # ── 迁移：Phase 4 daily_digests 增加 trends / anomalies 列 ──
@@ -343,6 +424,34 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''")
     except Exception:
         pass  # 列已存在
+
+    for col, definition in [
+        ("proposal_id", "TEXT NOT NULL DEFAULT ''"),
+        ("idempotency_key", "TEXT NOT NULL DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE worklist ADD COLUMN {col} {definition}")
+        except Exception:
+            pass
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_worklist_idempotency "
+        "ON worklist(idempotency_key) WHERE idempotency_key != ''"
+    )
+
+    try:
+        conn.execute(
+            "ALTER TABLE handoff_proposals "
+            "ADD COLUMN trigger_type TEXT NOT NULL DEFAULT 'explicit'"
+        )
+    except Exception:
+        pass
+    try:
+        conn.execute(
+            "ALTER TABLE handoff_proposals "
+            "ADD COLUMN data_sensitivity TEXT NOT NULL DEFAULT 'normal'"
+        )
+    except Exception:
+        pass
 
     # ── 迁移：retrieval_events 关联根 trace 与 Agent phase ──
     for column in ("trace_id", "phase_trace_id"):
@@ -399,5 +508,23 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE notes ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'")
     except Exception:
         pass
+
+    # ── 迁移（Gate v2 G4）：候选知识与 canonical RAG 隔离 ──
+    for col, definition in [
+        ("knowledge_status", "TEXT NOT NULL DEFAULT 'canonical'"),
+        ("proposed_supersedes_id", "TEXT"),
+        ("origin_session_id", "TEXT NOT NULL DEFAULT ''"),
+        ("reviewed_by", "TEXT NOT NULL DEFAULT ''"),
+        ("reviewed_at", "TEXT"),
+        ("published_at", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE notes ADD COLUMN {col} {definition}")
+        except Exception:
+            pass
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notes_knowledge_status "
+        "ON notes(knowledge_status, status, created_at)"
+    )
 
     conn.commit()

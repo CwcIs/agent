@@ -30,7 +30,8 @@ def get_smart_badges(conn: sqlite3.Connection = Depends(get_conn)):
     # 待复习
     due = conn.execute(
         """SELECT COUNT(*) as cnt FROM notes
-           WHERE status='live' AND deleted_at IS NULL
+           WHERE status='live' AND knowledge_status='canonical'
+             AND deleted_at IS NULL
              AND last_reviewed_at IS NOT NULL
              AND julianday('now') - julianday(last_reviewed_at) > review_interval"""
     ).fetchone()
@@ -47,7 +48,8 @@ def get_smart_badges(conn: sqlite3.Connection = Depends(get_conn)):
     # 冷门话题（7 天未更新）
     stale = conn.execute(
         """SELECT COUNT(*) as cnt FROM notes
-           WHERE status='live' AND deleted_at IS NULL
+           WHERE status='live' AND knowledge_status='canonical'
+             AND deleted_at IS NULL
              AND julianday('now') - julianday(created_at) BETWEEN 7 AND 30
              AND id NOT IN (
                SELECT note_a_id FROM idea_collisions
@@ -65,4 +67,3 @@ def get_smart_badges(conn: sqlite3.Connection = Depends(get_conn)):
         badges.append({"type": "suggestion", "label": f"{pending['cnt']} 条建议等待确认", "priority": "medium"})
 
     return {"badges": badges}
-

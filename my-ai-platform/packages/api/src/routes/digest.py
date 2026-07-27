@@ -20,7 +20,8 @@ async def _build_digest(conn: sqlite3.Connection, days: int, label: str) -> dict
     limit = 50 if days >= 30 else 30
     rows = conn.execute(
         "SELECT id, title, content, tags_json, created_at FROM notes "
-        "WHERE status='live' AND deleted_at IS NULL AND date(created_at) >= ? "
+        "WHERE status='live' AND knowledge_status='canonical' "
+        "AND deleted_at IS NULL AND date(created_at) >= ? "
         "ORDER BY created_at DESC LIMIT ?",
         (since, limit),
     ).fetchall()
@@ -85,7 +86,8 @@ async def _build_digest(conn: sqlite3.Connection, days: int, label: str) -> dict
     # 待复习笔记
     due_reviews = conn.execute(
         """SELECT id, title, review_count, review_interval FROM notes
-           WHERE status='live' AND deleted_at IS NULL
+           WHERE status='live' AND knowledge_status='canonical'
+             AND deleted_at IS NULL
              AND last_reviewed_at IS NOT NULL
              AND julianday('now') - julianday(last_reviewed_at) > review_interval
            LIMIT 5"""
@@ -232,4 +234,3 @@ def _cache_digest(conn: sqlite3.Connection, today: str, payload: dict) -> None:
         ),
     )
     conn.commit()
-

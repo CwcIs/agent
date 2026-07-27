@@ -34,7 +34,7 @@ class BaseAgent(ABC):
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self._session_id = ""
-        self._prompt_version = "v2"
+        self._prompt_version = "v3"
         self._trace_id = ""
         self._root_trace_id = ""
         self._tools = self._make_tools()
@@ -43,7 +43,7 @@ class BaseAgent(ABC):
     def set_runtime_context(
         self,
         session_id: str,
-        prompt_version: str = "v2",
+        prompt_version: str = "v3",
         trace_id: str = "",
         root_trace_id: str = "",
     ) -> None:

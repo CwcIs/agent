@@ -14,6 +14,7 @@ def test_fetch_related_notes_finds_match():
     conn.row_factory = sqlite3.Row
     conn.execute(
         "CREATE TABLE notes (id TEXT, title TEXT, content TEXT, status TEXT DEFAULT 'live', "
+        "knowledge_status TEXT DEFAULT 'canonical', "
         "deleted_at TEXT, tags_json TEXT DEFAULT '[]', created_at TEXT, updated_at TEXT)"
     )
     conn.execute(
@@ -49,6 +50,7 @@ def test_fetch_related_notes_no_match():
     conn = sqlite3.connect(":memory:")
     conn.execute(
         "CREATE TABLE notes (id TEXT, title TEXT, content TEXT, status TEXT DEFAULT 'live', "
+        "knowledge_status TEXT DEFAULT 'canonical', "
         "deleted_at TEXT, tags_json TEXT DEFAULT '[]', created_at TEXT, updated_at TEXT)"
     )
     conn.execute(
@@ -74,6 +76,7 @@ def test_assemble_context_injects_related_notes():
     conn.row_factory = sqlite3.Row
     conn.execute(
         "CREATE TABLE notes (id TEXT, title TEXT, content TEXT, status TEXT DEFAULT 'live', "
+        "knowledge_status TEXT DEFAULT 'canonical', "
         "deleted_at TEXT, tags_json TEXT DEFAULT '[]', created_at TEXT, updated_at TEXT)"
     )
     conn.execute(

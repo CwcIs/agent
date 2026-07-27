@@ -34,6 +34,10 @@ from src.agent.router_parser import (
 )
 from src.agent.verdict import detect_verdict
 from src.agent.orchestrator import orchestrate_parallel
+from src.agent.governance import (
+    create_handoff_proposal,
+    evaluate_handoff_proposal,
+)
 from src.agent.trace_events import record_agent_output_trace, record_tool_trace
 from src.agent.worklist import save_handoff, mark_done, mark_failed, mark_running, get_pending
 from src.context.assemble import assemble_context, package_handoff, agent_display_name
@@ -63,7 +67,7 @@ async def _route_serial_impl(
     user_input: str,
     session_id: str,
     conn: sqlite3.Connection | None = None,
-    prompt_version: str = "v2",
+    prompt_version: str = "v3",
     trace_id: str = "",
 ) -> AsyncGenerator[dict, None]:
     """
@@ -427,9 +431,66 @@ async def _route_serial_impl(
 
         mentions = parse_a2a_mentions(full_text, agent_id, agent_ids)
 
-        # ── a2a-shadow-detection：行内 @mention 扫描 ──
+        # ── a2a-shadow-detection：只告警，不生成可执行任务 ──
         shadows = detect_shadow_mentions(full_text, agent_id, agent_ids)
         for sw in shadows:
+            shadow_proposal = None
+            shadow_decision = None
+            if conn and sw.get("content"):
+                shadow_proposal = create_handoff_proposal(
+                    conn,
+                    trace_id=root_trace_id,
+                    phase_trace_id=phase_trace_id,
+                    session_id=session_id,
+                    source_agent_id=agent_id,
+                    target_agent_id=sw["agent_id"],
+                    objective=sw["content"],
+                    depth=depth,
+                    input_refs=[
+                        f"trace:{root_trace_id}",
+                        f"phase:{phase_trace_id}",
+                    ],
+                    trigger_type="shadow",
+                )
+                shadow_decision = evaluate_handoff_proposal(
+                    conn,
+                    shadow_proposal,
+                    valid_agent_ids=agent_ids,
+                    max_depth=MAX_A2A_DEPTH,
+                )
+                record_trace_event(
+                    conn,
+                    "handoff_proposed",
+                    trace_id=root_trace_id,
+                    phase_trace_id=phase_trace_id,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    status="degraded",
+                    name=sw["agent_id"],
+                    payload={
+                        "proposal_id": shadow_proposal["id"],
+                        "proposal_hash": shadow_proposal["proposal_hash"],
+                        "target_agent_id": sw["agent_id"],
+                        "trigger_type": "shadow",
+                    },
+                )
+                record_trace_event(
+                    conn,
+                    "policy_decision",
+                    trace_id=root_trace_id,
+                    phase_trace_id=phase_trace_id,
+                    session_id=session_id,
+                    agent_id="policy",
+                    parent_agent_id=agent_id,
+                    status=shadow_decision.outcome,
+                    name=shadow_decision.effective_risk,
+                    payload={
+                        "proposal_id": shadow_proposal["id"],
+                        "outcome": shadow_decision.outcome,
+                        "reason": shadow_decision.reason,
+                        "policy_version": shadow_decision.policy_version,
+                    },
+                )
             record_trace_event(
                 conn,
                 "warning",
@@ -442,6 +503,7 @@ async def _route_serial_impl(
                 payload={
                     "message": sw["warning"],
                     "target_agent_id": sw.get("agent_id", ""),
+                    "proposal_id": shadow_proposal["id"] if shadow_proposal else "",
                 },
             )
             yield {
@@ -450,10 +512,6 @@ async def _route_serial_impl(
                 "message": sw["warning"],
                 "shadow": True,
             }
-            # 如果主解析没找到 mention，把 shadow mention 加入队列
-            if not mentions and sw["content"]:
-                mentions.append((sw["agent_id"], sw["content"]))
-
         # ── verdict-detect：链路终止判定 ──
         verdict = detect_verdict(
             agent_full_text=full_text,
@@ -500,11 +558,123 @@ async def _route_serial_impl(
             yield {"type": "verdict", "agentId": agent_id, "reason": verdict.reason}
             break
 
-        # ── 路由决策：单 mention → 串行入队；多 mention → 并行 fan-out ──
+        # ── G2 Proposal Plane + Policy Plane ─────────────────────
+        # mention 只表达 Agent 的建议；只有 allow 决策才能进入 Orchestrator。
+        approved_mentions: list[tuple[str, str]] = []
+        approved_proposal_ids: list[str] = []
+        for next_agent_id, mention_content in mentions:
+            if conn is None:
+                yield {
+                    "type": "warning",
+                    "agentId": agent_id,
+                    "message": "Handoff proposal could not be persisted; execution denied.",
+                }
+                continue
+
+            proposal = create_handoff_proposal(
+                conn,
+                trace_id=root_trace_id,
+                phase_trace_id=phase_trace_id,
+                session_id=session_id,
+                source_agent_id=agent_id,
+                target_agent_id=next_agent_id,
+                objective=mention_content,
+                depth=depth,
+                input_refs=[
+                    f"trace:{root_trace_id}",
+                    f"phase:{phase_trace_id}",
+                ],
+            )
+            record_trace_event(
+                conn,
+                "handoff_proposed",
+                trace_id=root_trace_id,
+                phase_trace_id=phase_trace_id,
+                session_id=session_id,
+                agent_id=agent_id,
+                name=next_agent_id,
+                payload={
+                    "proposal_id": proposal["id"],
+                    "proposal_hash": proposal["proposal_hash"],
+                    "target_agent_id": next_agent_id,
+                    "requested_capabilities": proposal["requested_capabilities"],
+                    "objective_preview": (
+                        "[REDACTED:SENSITIVE_HANDOFF_OBJECTIVE]"
+                        if proposal["data_sensitivity"] == "sensitive"
+                        else mention_content[:500]
+                    ),
+                    "data_sensitivity": proposal["data_sensitivity"],
+                },
+            )
+            decision = evaluate_handoff_proposal(
+                conn,
+                proposal,
+                valid_agent_ids=agent_ids,
+                max_depth=MAX_A2A_DEPTH,
+            )
+            record_trace_event(
+                conn,
+                "policy_decision",
+                trace_id=root_trace_id,
+                phase_trace_id=phase_trace_id,
+                session_id=session_id,
+                agent_id="policy",
+                parent_agent_id=agent_id,
+                status=decision.outcome,
+                name=decision.effective_risk,
+                payload={
+                    "proposal_id": proposal["id"],
+                    "outcome": decision.outcome,
+                    "effective_risk": decision.effective_risk,
+                    "reason": decision.reason,
+                    "policy_version": decision.policy_version,
+                },
+            )
+            if decision.allowed:
+                approved_mentions.append((next_agent_id, mention_content))
+                approved_proposal_ids.append(proposal["id"])
+            else:
+                message = (
+                    f"Handoff to @{next_agent_id} stopped by Policy Gate: "
+                    f"{decision.outcome} ({decision.reason})."
+                )
+                yield {
+                    "type": "warning",
+                    "agentId": agent_id,
+                    "message": message,
+                }
+
+        if mentions and not approved_mentions:
+            final_verdict = "handoff_blocked"
+            trace_status = "warning"
+            record_trace_event(
+                conn,
+                "verdict",
+                trace_id=root_trace_id,
+                phase_trace_id=phase_trace_id,
+                session_id=session_id,
+                agent_id=agent_id,
+                status="terminal",
+                name=final_verdict,
+                payload={
+                    "reason": final_verdict,
+                    "should_terminate": True,
+                    "mention_targets": [target for target, _ in mentions],
+                    "depth": depth,
+                },
+            )
+            yield {"type": "verdict", "agentId": agent_id, "reason": final_verdict}
+            break
+
+        mentions = approved_mentions
+
+        # ── Execution Plane：单 mention 串行；多 mention 并行 fan-out ──
         tool_results = [e for e in tool_events if e["type"] == "tool_end"]
 
         if len(mentions) > 1:
-            for next_agent_id, mention_content in mentions:
+            for (next_agent_id, mention_content), proposal_id in zip(
+                mentions, approved_proposal_ids
+            ):
                 record_trace_event(
                     conn,
                     "handoff",
@@ -517,6 +687,7 @@ async def _route_serial_impl(
                     payload={
                         "from_agent": agent_id,
                         "to_agent": next_agent_id,
+                        "proposal_id": proposal_id,
                         "mention_preview": mention_content[:500],
                         "mention_sha256": content_fingerprint(mention_content),
                     },
@@ -525,11 +696,14 @@ async def _route_serial_impl(
             # 先为每个 parallel mention 创建 worklist 条目，保证 crash recovery
             parallel_wids: list[str] = []
             if conn:
-                for next_agent_id, mention_content in mentions:
+                for (next_agent_id, mention_content), proposal_id in zip(
+                    mentions, approved_proposal_ids
+                ):
                     wid = save_handoff(
                         conn, session_id, next_agent_id, depth,
                         user_input, full_text, mention_content, tool_results,
                         agent_a_id=agent_id,
+                        proposal_id=proposal_id,
                     )
                     parallel_wids.append(wid)
             # 每个并行 branch 独立 trace_id
@@ -557,7 +731,9 @@ async def _route_serial_impl(
                 final_verdict = "parallel_complete"
             break  # 并行 branches 结束后不继续串行链路
 
-        for next_agent_id, mention_content in mentions:
+        for (next_agent_id, mention_content), proposal_id in zip(
+            mentions, approved_proposal_ids
+        ):
             record_trace_event(
                 conn,
                 "handoff",
@@ -570,6 +746,7 @@ async def _route_serial_impl(
                 payload={
                     "from_agent": agent_id,
                     "to_agent": next_agent_id,
+                    "proposal_id": proposal_id,
                     "mention_preview": mention_content[:500],
                     "mention_sha256": content_fingerprint(mention_content),
                 },
@@ -587,6 +764,7 @@ async def _route_serial_impl(
                     conn, session_id, next_agent_id, depth,
                     user_input, full_text, mention_content, tool_results,
                     agent_a_id=agent_id,
+                    proposal_id=proposal_id,
                 )
             queue.append((next_agent_id, handoff_msgs, wid))
         depth += 1
@@ -622,7 +800,7 @@ async def route_serial(
     user_input: str,
     session_id: str,
     conn: sqlite3.Connection | None = None,
-    prompt_version: str = "v2",
+    prompt_version: str = "v3",
     trace_id: str = "",
 ) -> AsyncGenerator[dict, None]:
     """Public router wrapper that always closes the root trace on failure."""

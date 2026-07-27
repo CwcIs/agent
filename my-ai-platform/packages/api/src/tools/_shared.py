@@ -39,7 +39,8 @@ def _parse_wikilinks(content: str) -> list[str]:
 def _resolve_title_to_id(conn: sqlite3.Connection, title: str) -> str | None:
     """按标题精确匹配查找笔记 ID。多条同名笔记时返回最近更新的。"""
     rows = conn.execute(
-        "SELECT id FROM notes WHERE title = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+        "SELECT id FROM notes WHERE title = ? AND knowledge_status='canonical' "
+        "AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
         (title,),
     ).fetchall()
     return rows[0][0] if rows else None
@@ -119,4 +120,3 @@ async def _background_embed(conn: sqlite3.Connection, note_id: str, title: str, 
                     pass
     except Exception:
         pass
-

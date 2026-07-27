@@ -5,6 +5,7 @@ interface Note {
   content: string;
   tags: string[];
   status: string;
+  knowledge_status?: string;
   created_at: string;
 }
 
@@ -40,6 +41,15 @@ const STATUS_LABEL: Record<string, string> = {
   archived: "Archived",
 };
 
+const KNOWLEDGE_LABEL: Record<string, string> = {
+  draft: "Draft",
+  pending_review: "待确认",
+  canonical: "可信",
+  superseded: "已取代",
+  revoked: "已拒绝",
+  expired: "已过期",
+};
+
 function handleClick() {
   emit("select", props.note);
 }
@@ -63,6 +73,16 @@ function handleContextMenu(e: MouseEvent) {
     <div class="flex items-start justify-between gap-1.5">
       <span class="text-xs leading-snug flex-1 line-clamp-2" style="color: #F4F6FA">{{ note.title }}</span>
       <span
+        v-if="note.knowledge_status && note.knowledge_status !== 'canonical'"
+        class="text-[8px] px-1 py-0.5 rounded-full font-medium shrink-0 mt-0.5 border"
+        :style="{
+          background: note.knowledge_status === 'pending_review' ? 'rgba(245,185,66,0.10)' : 'rgba(154,164,178,0.06)',
+          color: note.knowledge_status === 'pending_review' ? '#F5B942' : '#9AA4B2',
+          borderColor: note.knowledge_status === 'pending_review' ? 'rgba(245,185,66,0.18)' : 'rgba(154,164,178,0.10)',
+        }"
+      >{{ KNOWLEDGE_LABEL[note.knowledge_status] || note.knowledge_status }}</span>
+      <span
+        v-else
         class="text-[8px] px-1 py-0.5 rounded-full font-medium shrink-0 mt-0.5 border"
         :style="{
           background: STATUS_STYLES[note.status]?.bg || STATUS_STYLES.live.bg,

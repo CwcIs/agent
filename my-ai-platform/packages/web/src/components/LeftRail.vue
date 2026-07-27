@@ -9,6 +9,7 @@ interface Note {
   content: string;
   tags: string[];
   status: string;
+  knowledge_status?: string;
   created_at: string;
 }
 

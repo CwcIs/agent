@@ -108,6 +108,17 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_messages_session
             ON messages(session_id, created_at);
 
+        CREATE TABLE IF NOT EXISTS chat_threads (
+            session_id TEXT PRIMARY KEY,
+            title      TEXT NOT NULL DEFAULT '',
+            pinned     INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1)),
+            archived   INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1)),
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_chat_threads_state
+            ON chat_threads(archived, pinned, updated_at);
+
         -- ③ daily_digests 每日 AI 回顾
         CREATE TABLE IF NOT EXISTS daily_digests (
             id           TEXT PRIMARY KEY,

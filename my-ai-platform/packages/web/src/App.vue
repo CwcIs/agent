@@ -48,16 +48,19 @@ const {
   refreshThreads,
   selectThread,
   createThread,
+  updateThread,
 } = useChatThreads();
-const activeThreadTitle = computed(() =>
-  threads.value.find(thread => thread.session_id === activeSessionId.value)?.title || "New thought"
+const activeThread = computed(() =>
+  threads.value.find(thread => thread.session_id === activeSessionId.value)
 );
+const activeThreadTitle = computed(() => activeThread.value?.title || "New thought");
 
 // Daily digest state
 const showDigest = ref(false);
 const dailyNoteCount = ref(0);
 const dailyTrendCount = ref(0);
 const dailyAnomalyCount = ref(0);
+const pendingReviewCount = ref(0);
 const smartBadges = ref<Array<{ type: string; label: string; priority: string }>>([]);
 const notificationsEnabled = ref(false);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -110,6 +113,18 @@ function handleSelectThread(sessionId: string) {
   selectThread(sessionId);
   selectedNote.value = null;
   drawerOpen.value = false;
+}
+
+async function handleUpdateThread(
+  sessionId: string,
+  patch: { title?: string; pinned?: boolean; archived?: boolean },
+) {
+  try {
+    await updateThread(sessionId, patch);
+    toast(patch.archived ? "任务已归档" : "任务已更新", "success");
+  } catch {
+    toast("任务更新失败", "error");
+  }
 }
 
 function handleHubNavigation(target: "trace" | "graph" | "profile" | "admin" | "digest") {
@@ -219,9 +234,10 @@ onUnmounted(() => {
 
 async function fetchDailyBadge() {
   try {
-    const [digestResp, badgeResp] = await Promise.all([
+    const [digestResp, badgeResp, reviewResp] = await Promise.all([
       fetch("/digest"),
       fetch("/user/smart-badges"),
+      fetch("/notes?knowledge_status=pending_review"),
     ]);
     if (digestResp.ok) {
       const data = await digestResp.json();
@@ -232,6 +248,10 @@ async function fetchDailyBadge() {
     if (badgeResp.ok) {
       const data = await badgeResp.json();
       smartBadges.value = data.badges || [];
+    }
+    if (reviewResp.ok) {
+      const data = await reviewResp.json();
+      pendingReviewCount.value = data.notes?.length ?? 0;
     }
   } catch { /* ignore */ }
 }
@@ -312,6 +332,7 @@ provide("toast", toast);
         @toggle-digest="showDigest = !showDigest"
         @new-thread="handleNewThread"
         @select-thread="handleSelectThread"
+        @update-thread="handleUpdateThread"
         @open-hub="showWorkbenchHub = true"
       />
     </template>
@@ -329,6 +350,8 @@ provide("toast", toast);
           :daily-anomaly-count="dailyAnomalyCount"
           :smart-badges="smartBadges"
           :thread-title="activeThreadTitle"
+          :message-count="activeThread?.message_count ?? 0"
+          :pending-review-count="pendingReviewCount"
           @toggle-digest="showDigest = !showDigest"
           @open-hub="showWorkbenchHub = true"
         >
@@ -392,8 +415,10 @@ provide("toast", toast);
     :note-count="dailyNoteCount"
     :trend-count="dailyTrendCount"
     :anomaly-count="dailyAnomalyCount"
+    :pending-review-count="pendingReviewCount"
     @close="showWorkbenchHub = false"
     @navigate="handleHubNavigation"
+    @review-updated="fetchDailyBadge(); noteListRef?.refresh()"
   />
 
   <!-- Global Toast -->

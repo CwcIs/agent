@@ -8,6 +8,7 @@ export interface ChatThread {
   message_count: number;
   updated_at: string;
   agent_ids: string[];
+  pinned: boolean;
 }
 
 export function useChatThreads() {
@@ -38,6 +39,24 @@ export function useChatThreads() {
     return sessionId;
   }
 
+  async function updateThread(
+    sessionId: string,
+    patch: { title?: string; pinned?: boolean; archived?: boolean },
+  ) {
+    const response = await fetch(`/chat/threads/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to update thread: ${response.status}`);
+    }
+    await refreshThreads();
+    if (patch.archived && activeSessionId.value === sessionId) {
+      createThread();
+    }
+  }
+
   return {
     activeSessionId,
     threads,
@@ -45,5 +64,6 @@ export function useChatThreads() {
     refreshThreads,
     selectThread,
     createThread,
+    updateThread,
   };
 }

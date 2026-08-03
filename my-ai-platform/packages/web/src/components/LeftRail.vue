@@ -30,11 +30,24 @@ const emit = defineEmits<{
   toggleDigest: [];
   newThread: [];
   selectThread: [sessionId: string];
+  updateThread: [sessionId: string, patch: { title?: string; pinned?: boolean; archived?: boolean }];
   openHub: [];
 }>();
 
 const noteListRef = ref<InstanceType<typeof NoteListView> | null>(null);
-const visibleThreads = computed(() => props.threads.slice(0, 8));
+const threadQuery = ref("");
+const menuThreadId = ref<string | null>(null);
+const renamingThreadId = ref<string | null>(null);
+const renameValue = ref("");
+const visibleThreads = computed(() => {
+  const query = threadQuery.value.trim().toLowerCase();
+  const filtered = query
+    ? props.threads.filter(thread =>
+        `${thread.title} ${thread.preview}`.toLowerCase().includes(query)
+      )
+    : props.threads;
+  return filtered.slice(0, 12);
+});
 
 function focusSearch() { noteListRef.value?.focusSearch(); }
 function refresh() { noteListRef.value?.refresh(); }
@@ -48,6 +61,20 @@ function formatThreadTime(value: string): string {
     return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
   }
   return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function startRename(thread: ChatThread) {
+  renamingThreadId.value = thread.session_id;
+  renameValue.value = thread.title;
+  menuThreadId.value = null;
+}
+
+function commitRename(thread: ChatThread) {
+  const title = renameValue.value.trim();
+  renamingThreadId.value = null;
+  if (title && title !== thread.title) {
+    emit("updateThread", thread.session_id, { title });
+  }
 }
 </script>
 
@@ -74,30 +101,70 @@ function formatThreadTime(value: string): string {
           <span v-if="loadingThreads">同步中</span>
           <span v-else>{{ threads.length }}</span>
         </div>
+        <label class="thread-search">
+          <span>⌕</span>
+          <input v-model="threadQuery" type="search" placeholder="搜索任务" aria-label="搜索任务" />
+        </label>
         <div class="thread-list">
-          <button
+          <div
             v-for="thread in visibleThreads"
             :key="thread.session_id"
-            class="thread-item"
+            class="thread-row"
             :class="{ active: thread.session_id === activeSessionId }"
-            @click="emit('selectThread', thread.session_id)"
           >
-            <span class="thread-marker" />
-            <span class="thread-copy">
-              <strong>{{ thread.title }}</strong>
-              <small>{{ thread.message_count }} 条消息 · {{ formatThreadTime(thread.updated_at) }}</small>
-            </span>
-            <span class="agent-stack">
-              <i
-                v-for="agentId in thread.agent_ids.slice(0, 3)"
-                :key="agentId"
-                :class="agentId"
-                :title="agentMeta[agentId]?.label || agentId"
-              >{{ agentMeta[agentId]?.short || agentId.slice(0, 1).toUpperCase() }}</i>
-            </span>
-          </button>
+            <div v-if="renamingThreadId === thread.session_id" class="thread-item">
+              <span class="thread-marker" />
+              <span class="thread-copy">
+                <input
+                  v-model="renameValue"
+                  class="rename-input"
+                  aria-label="重命名任务"
+                  @keydown.enter.stop.prevent="commitRename(thread)"
+                  @keydown.esc.stop="renamingThreadId = null"
+                  @blur="commitRename(thread)"
+                />
+                <small>{{ thread.message_count }} 条消息 · {{ formatThreadTime(thread.updated_at) }}</small>
+              </span>
+            </div>
+            <button v-else class="thread-item" @click="emit('selectThread', thread.session_id)">
+              <span class="thread-marker" />
+              <span class="thread-copy">
+                <strong>
+                  <span v-if="thread.pinned" class="pin-mark" title="已置顶">◆</span>
+                  {{ thread.title }}
+                </strong>
+                <small>{{ thread.message_count }} 条消息 · {{ formatThreadTime(thread.updated_at) }}</small>
+              </span>
+              <span class="agent-stack">
+                <i
+                  v-for="agentId in thread.agent_ids.slice(0, 3)"
+                  :key="agentId"
+                  :class="agentId"
+                  :title="agentMeta[agentId]?.label || agentId"
+                >{{ agentMeta[agentId]?.short || agentId.slice(0, 1).toUpperCase() }}</i>
+              </span>
+            </button>
+            <button
+              class="thread-menu-trigger"
+              :aria-label="`管理任务：${thread.title}`"
+              title="管理任务"
+              @click.stop="menuThreadId = menuThreadId === thread.session_id ? null : thread.session_id"
+            >⋯</button>
+            <div v-if="menuThreadId === thread.session_id" class="thread-menu">
+              <button @click="emit('updateThread', thread.session_id, { pinned: !thread.pinned }); menuThreadId = null">
+                {{ thread.pinned ? "取消置顶" : "置顶任务" }}
+              </button>
+              <button @click="startRename(thread)">重命名</button>
+              <button class="archive-action" @click="emit('updateThread', thread.session_id, { archived: true }); menuThreadId = null">
+                归档任务
+              </button>
+            </div>
+          </div>
           <div v-if="!loadingThreads && !threads.length" class="thread-empty">
             新任务会在发送第一条消息后出现在这里
+          </div>
+          <div v-else-if="!loadingThreads && !visibleThreads.length" class="thread-empty">
+            没有匹配的任务
           </div>
         </div>
       </section>
@@ -186,27 +253,62 @@ function formatThreadTime(value: string): string {
   text-transform: uppercase;
 }
 .thread-section { min-height: 104px; }
+.thread-search {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 4px 4px 6px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: #0f1419;
+  color: var(--text-tertiary);
+}
+.thread-search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text-primary); font-size: 10px; }
+.thread-search input::placeholder { color: var(--text-tertiary); }
 .thread-list { display: grid; gap: 2px; max-height: 220px; margin-top: 3px; overflow-y: auto; }
+.thread-row { position: relative; display: flex; align-items: stretch; border: 1px solid transparent; border-radius: 6px; }
+.thread-row:hover { background: var(--surface-hover); }
+.thread-row.active { background: #151c22; border-color: #29353f; }
 .thread-item {
-  width: 100%;
+  min-width: 0;
+  flex: 1;
   min-height: 47px;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 7px;
-  border: 1px solid transparent;
-  border-radius: 6px;
   color: var(--text-secondary);
   text-align: left;
 }
-.thread-item:hover { background: var(--surface-hover); }
-.thread-item.active { background: #151c22; border-color: #29353f; }
+.thread-row:hover .thread-menu-trigger, .thread-row.active .thread-menu-trigger { opacity: 1; }
 .thread-marker { width: 3px; height: 24px; flex: 0 0 3px; border-radius: 2px; background: transparent; }
-.thread-item.active .thread-marker { background: #7bc3d4; }
+.thread-row.active .thread-marker { background: #7bc3d4; }
 .thread-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .thread-copy strong { overflow: hidden; color: var(--text-secondary); font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.thread-item.active .thread-copy strong { color: var(--text-primary); }
+.thread-row.active .thread-copy strong { color: var(--text-primary); }
 .thread-copy small { color: var(--text-tertiary); font-size: 9px; }
+.pin-mark { margin-right: 3px; color: #7bc3d4; font-size: 7px; }
+.rename-input { width: 100%; border: 0; border-bottom: 1px solid #49717f; outline: 0; background: transparent; color: var(--text-primary); font-size: 11px; }
+.thread-menu-trigger { width: 25px; flex: 0 0 25px; opacity: 0; border-radius: 5px; color: var(--text-tertiary); font-size: 15px; }
+.thread-menu-trigger:hover { background: #27313a; color: var(--text-primary); }
+.thread-menu {
+  position: absolute;
+  z-index: 8;
+  top: 40px;
+  right: 3px;
+  width: 112px;
+  display: grid;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: #171d23;
+  box-shadow: 0 14px 36px rgba(0,0,0,.38);
+}
+.thread-menu button { min-height: 30px; padding: 0 8px; border-radius: 4px; color: var(--text-secondary); font-size: 10px; text-align: left; }
+.thread-menu button:hover { background: var(--surface-hover); color: var(--text-primary); }
+.thread-menu .archive-action { color: var(--color-warning); }
 .agent-stack { display: flex; }
 .agent-stack i {
   width: 18px;
@@ -259,5 +361,8 @@ function formatThreadTime(value: string): string {
     height: 100%;
     box-shadow: 18px 0 50px rgba(0, 0, 0, .48);
   }
+}
+@media (hover: none) {
+  .thread-menu-trigger { opacity: 1; }
 }
 </style>

@@ -1,7 +1,7 @@
 import sqlite3
 import unittest
 
-from src.lib.chat_threads import get_history, list_threads
+from src.lib.chat_threads import get_history, list_threads, update_thread
 
 
 def make_conn() -> sqlite3.Connection:
@@ -16,6 +16,18 @@ def make_conn() -> sqlite3.Connection:
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE chat_threads (
+            session_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '',
+            pinned INTEGER NOT NULL DEFAULT 0,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
@@ -54,6 +66,17 @@ class ChatThreadRoutesTest(unittest.TestCase):
             message["content"] for message in result["messages"]
         ])
         self.assertNotIn("First answer", [message["content"] for message in result["messages"]])
+
+    def test_thread_metadata_controls_title_order_and_archiving(self):
+        update_thread(self.conn, "older", title="Pinned research", pinned=True)
+        result = list_threads(self.conn)
+        self.assertEqual("older", result["threads"][0]["session_id"])
+        self.assertEqual("Pinned research", result["threads"][0]["title"])
+        self.assertTrue(result["threads"][0]["pinned"])
+
+        update_thread(self.conn, "older", archived=True)
+        result = list_threads(self.conn)
+        self.assertEqual(["newer"], [item["session_id"] for item in result["threads"]])
 
 
 if __name__ == "__main__":

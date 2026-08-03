@@ -7,6 +7,8 @@ const props = defineProps<{
   runningAgents: string[];
   sessionId: string;
   threadTitle: string;
+  messageCount: number;
+  pendingReviewCount?: number;
   dailyNoteCount?: number;
   dailyTrendCount?: number;
   dailyAnomalyCount?: number;
@@ -49,6 +51,7 @@ const hasHighlights = computed(() =>
     <div class="connection-state">
       <span class="live-dot" :class="{ streaming }" />
       <span>{{ streaming ? "Agents working" : "Ready" }}</span>
+      <span v-if="messageCount" class="message-count">{{ messageCount }} msgs</span>
     </div>
     <button class="digest-button" :class="{ active: hasHighlights }" @click="emit('toggleDigest')">
       <span>Daily Review</span>
@@ -57,6 +60,7 @@ const hasHighlights = computed(() =>
     <button class="hub-button" title="打开 Workbench Hub" @click="emit('openHub')">
       <span class="hub-icon">H</span>
       <span>Hub</span>
+      <b v-if="pendingReviewCount" class="review-count">{{ pendingReviewCount }}</b>
     </button>
   </header>
 </template>
@@ -102,6 +106,7 @@ const hasHighlights = computed(() =>
 .agent-state.brain i { color: var(--agent-brain); }
 .topbar-spacer { flex: 1; }
 .connection-state { display: flex; align-items: center; gap: 7px; color: var(--text-tertiary); font-size: 10px; }
+.message-count { padding-left: 7px; border-left: 1px solid var(--border-subtle); }
 .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-success); }
 .live-dot.streaming { background: var(--color-warning); animation: pulse-glow 1.4s ease-in-out infinite; }
 .digest-button {
@@ -131,6 +136,7 @@ const hasHighlights = computed(() =>
 }
 .hub-button:hover { background: #1b3038; border-color: #49717f; }
 .hub-icon { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 4px; background: #223941; color: #a8dce6; font-size: 9px; }
+.review-count { min-width: 17px; height: 17px; display: grid; place-items: center; border-radius: 50%; background: rgba(255,189,115,.16); color: var(--agent-review); font-size: 8px; }
 @media (max-width: 900px) {
   .agent-state b, .digest-button { display: none; }
   .agent-state { padding-right: 4px; }

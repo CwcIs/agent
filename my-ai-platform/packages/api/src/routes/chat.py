@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from src.routes.dependencies import get_conn
-from src.lib.chat_threads import get_history, list_threads
+from src.lib.chat_threads import get_history, list_threads, update_thread
 
 router = APIRouter()
 
@@ -126,6 +126,12 @@ class ChatStreamBody(BaseModel):
     prompt_version: str = "v3"
 
 
+class ChatThreadPatch(BaseModel):
+    title: str | None = None
+    pinned: bool | None = None
+    archived: bool | None = None
+
+
 @router.get("/chat/threads")
 def list_chat_threads(limit: int = 30, conn: sqlite3.Connection = Depends(get_conn)):
     """List recent isolated chat workspaces with a stable, user-derived title."""
@@ -141,6 +147,26 @@ def get_chat_history(
     if not session_id.strip():
         raise HTTPException(status_code=400, detail="session_id is required")
     return get_history(conn, session_id)
+
+
+@router.patch("/chat/threads/{session_id}")
+def patch_chat_thread(
+    session_id: str,
+    body: ChatThreadPatch,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    if body.title is not None and not body.title.strip():
+        raise HTTPException(status_code=400, detail="title cannot be empty")
+    try:
+        return update_thread(
+            conn,
+            session_id,
+            title=body.title,
+            pinned=body.pinned,
+            archived=body.archived,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ── POST /chat/stream ─────────────────────────────────────

@@ -27,14 +27,25 @@ def _serialize_note(row: sqlite3.Row) -> dict:
 
 
 @router.get("/notes")
-def list_notes(conn: sqlite3.Connection = Depends(get_conn)):
-    rows = conn.execute(
-        """SELECT id, title, content, tags_json, status, knowledge_status,
-                  source_type, created_at
-           FROM notes
-           WHERE deleted_at IS NULL
-           ORDER BY created_at DESC LIMIT 100"""
-    ).fetchall()
+def list_notes(
+    knowledge_status: str | None = None,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    allowed_statuses = {
+        "draft", "pending_review", "canonical", "superseded", "revoked", "expired"
+    }
+    if knowledge_status is not None and knowledge_status not in allowed_statuses:
+        raise HTTPException(400, "invalid knowledge_status")
+    sql = """SELECT id, title, content, summary, tags_json, status, knowledge_status,
+                    proposed_supersedes_id, origin_session_id, source_type, created_at
+             FROM notes
+             WHERE deleted_at IS NULL"""
+    params: tuple[str, ...] = ()
+    if knowledge_status is not None:
+        sql += " AND knowledge_status = ?"
+        params = (knowledge_status,)
+    sql += " ORDER BY created_at DESC LIMIT 100"
+    rows = conn.execute(sql, params).fetchall()
     return {"notes": [_serialize_note(row) for row in rows]}
 
 

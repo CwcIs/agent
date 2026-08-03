@@ -254,24 +254,51 @@ def merge_tags_rest(body: TagMergeBody, conn: sqlite3.Connection = Depends(get_c
 
 # ── GET /notes/graph ─────────────────────────────────────
 @router.get("/notes/graph")
-def get_graph(center_id: str = "", depth: int = 2, conn: sqlite3.Connection = Depends(get_conn)):
-    """返回笔记关系图谱（BFS）。center_id 为空时返回全图（上限 200 条笔记）。"""
+def get_graph(
+    center_id: str = "",
+    depth: int = 2,
+    include_suggested: bool = False,
+    relation: str = "",
+    min_confidence: float = 0.0,
+    limit: int = 200,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """返回笔记关系图谱（BFS）。center_id 为空时返回全图（默认上限 200 条笔记）。"""
     depth = min(max(depth, 1), 3)  # 1-3 跳
+    limit = min(max(limit, 20), 500)
+    min_confidence = min(max(min_confidence, 0.0), 1.0)
+    allowed_relations = {"wikilink", "evolved_from", "supersedes", "contradicts", "similar", "related"}
+    relation_filters = {
+        r.strip()
+        for r in relation.split(",")
+        if r.strip() in allowed_relations
+    }
+
+    def _edge_where(prefix: str = "") -> tuple[str, list]:
+        clauses = [f"{prefix}status != 'rejected'", f"{prefix}confidence >= ?"]
+        params: list = [min_confidence]
+        if not include_suggested:
+            clauses.append(f"{prefix}status = 'confirmed'")
+        if relation_filters:
+            placeholders = ",".join("?" * len(relation_filters))
+            clauses.append(f"{prefix}relation IN ({placeholders})")
+            params.extend(sorted(relation_filters))
+        return " AND ".join(clauses), params
 
     if center_id:
         # BFS 遍历 edges
         visited: set[str] = set()
         frontier = {center_id}
+        edge_where, edge_params = _edge_where()
         for _ in range(depth + 1):
             if not frontier:
                 break
             visited.update(frontier)
-            placeholders = ",".join("?" * len(frontier))
             new_ids = set()
             for fid in frontier:
                 rows = conn.execute(
-                    f"SELECT from_id, to_id FROM edges WHERE (from_id = ? OR to_id = ?) AND status != 'rejected'",
-                    (fid, fid),
+                    f"SELECT from_id, to_id FROM edges WHERE (from_id = ? OR to_id = ?) AND {edge_where}",
+                    [fid, fid, *edge_params],
                 ).fetchall()
                 for r in rows:
                     nid = r["to_id"] if r["from_id"] == fid else r["from_id"]
@@ -284,7 +311,8 @@ def get_graph(center_id: str = "", depth: int = 2, conn: sqlite3.Connection = De
         rows = conn.execute(
             "SELECT id FROM notes WHERE status='live' "
             "AND knowledge_status='canonical' AND deleted_at IS NULL "
-            "ORDER BY created_at DESC LIMIT 200"
+            "ORDER BY created_at DESC LIMIT ?",
+            (limit,),
         ).fetchall()
         note_ids = {r["id"] for r in rows}
 
@@ -299,12 +327,13 @@ def get_graph(center_id: str = "", depth: int = 2, conn: sqlite3.Connection = De
     ).fetchall()
 
     # 获取节点之间的 edges
+    edge_where, edge_params = _edge_where()
     edges = conn.execute(
-        f"""SELECT id, from_id, to_id, relation, confidence, source, status
+        f"""SELECT id, from_id, to_id, relation, confidence, source, status, evidence, created_at
             FROM edges
             WHERE from_id IN ({placeholders}) AND to_id IN ({placeholders})
-            AND status != 'rejected'""",
-        list(note_ids) + list(note_ids),
+            AND {edge_where}""",
+        [*list(note_ids), *list(note_ids), *edge_params],
     ).fetchall()
 
     # 统计每个节点的连接数
@@ -334,7 +363,17 @@ def get_graph(center_id: str = "", depth: int = 2, conn: sqlite3.Connection = De
                 "confidence": e["confidence"],
                 "source": e["source"],
                 "status": e["status"],
+                "evidence": e["evidence"],
+                "created_at": e["created_at"],
             }
             for e in edges
         ],
+        "meta": {
+            "center_id": center_id,
+            "depth": depth if center_id else None,
+            "include_suggested": include_suggested,
+            "min_confidence": min_confidence,
+            "relations": sorted(relation_filters),
+            "limit": limit,
+        },
     }

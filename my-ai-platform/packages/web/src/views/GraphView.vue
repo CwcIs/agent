@@ -25,7 +25,15 @@ interface GraphEdge {
   confidence: number;
   source: string;
   status: string;
+  evidence?: string;
+  created_at?: string;
 }
+
+type SimulationEdge = Omit<GraphEdge, "source"> & {
+  source: string | GraphNode;
+  target: string | GraphNode;
+  edge_source: string;
+};
 
 interface GraphData {
   nodes: GraphNode[];
@@ -41,6 +49,8 @@ const loading = ref(true);
 const searchQuery = ref("");
 const centerNoteId = ref("");
 const depth = ref(2);
+const includeSuggested = ref(false);
+const minConfidence = ref(0);
 
 const container = ref<HTMLDivElement | null>(null);
 const svg = ref<SVGSVGElement | null>(null) as any;
@@ -71,6 +81,8 @@ async function loadGraph(centerId = "", d = 2) {
   try {
     const params = new URLSearchParams();
     if (centerId) { params.set("center_id", centerId); params.set("depth", String(d)); }
+    if (includeSuggested.value) params.set("include_suggested", "true");
+    if (minConfidence.value > 0) params.set("min_confidence", String(minConfidence.value));
     const resp = await fetch(`/notes/graph?${params.toString()}`);
     if (resp.ok) graph.value = await resp.json();
   } catch { /* ignore */ }
@@ -82,6 +94,8 @@ async function loadGraph(centerId = "", d = 2) {
 function renderForce() {
   const el = container.value;
   if (!el || !graph.value.nodes.length) return;
+
+  simulation?.stop();
 
   const W = el.clientWidth;
   const H = el.clientHeight || 600;
@@ -106,10 +120,16 @@ function renderForce() {
   const visibleEdges = graph.value.edges.filter(
     e => nodeIds.has(e.from_id) && nodeIds.has(e.to_id)
   );
+  const simulationEdges: SimulationEdge[] = visibleEdges.map(edge => ({
+    ...edge,
+    edge_source: edge.source,
+    source: edge.from_id,
+    target: edge.to_id,
+  }));
 
   // Edge lines
-  const link = g.append("g").selectAll<SVGLineElement, GraphEdge>("line")
-    .data(visibleEdges)
+  const link = g.append("g").selectAll<SVGLineElement, SimulationEdge>("line")
+    .data(simulationEdges)
     .join("line")
     .attr("stroke", d => RELATION_COLORS[d.relation] || "#5A6278")
     .attr("stroke-opacity", d => d.status === "suggested" ? 0.25 : 0.4)
@@ -162,11 +182,16 @@ function renderForce() {
     }
   });
 
-  node.append("title").text(d => d.title);
+  node.on("dblclick", (event, d) => {
+    event.stopPropagation();
+    emit("selectNote", d.id);
+  });
+
+  node.append("title").text(d => `${d.title}\n${d.connection_count} connection${d.connection_count === 1 ? "" : "s"}`);
 
   // Force simulation
   simulation = d3.forceSimulation(graph.value.nodes as any)
-    .force("link", d3.forceLink(visibleEdges as any).id((d: any) => d.id).distance(80))
+    .force("link", d3.forceLink(simulationEdges as any).id((d: any) => d.id).distance(80))
     .force("charge", d3.forceManyBody().strength(-200))
     .force("center", d3.forceCenter(W / 2, H / 2))
     .force("collision", d3.forceCollide().radius((d: any) => Math.max(8, 6 + (d.connection_count || 0) * 2.5) + 10));
@@ -206,6 +231,10 @@ function focusSearch() {
 
 watch(depth, (d) => {
   if (centerNoteId.value) loadGraph(centerNoteId.value, d);
+});
+
+watch([includeSuggested, minConfidence], () => {
+  loadGraph(centerNoteId.value, depth.value);
 });
 </script>
 
@@ -247,6 +276,22 @@ watch(depth, (d) => {
           <option :value="1">1 hop</option>
           <option :value="2">2 hops</option>
           <option :value="3">3 hops</option>
+        </select>
+
+        <label class="text-[10px] flex items-center gap-1" style="color: var(--text-muted)">
+          <input v-model="includeSuggested" type="checkbox" class="accent-indigo-400" />
+          suggested
+        </label>
+
+        <select
+          v-model.number="minConfidence"
+          class="text-[10px] px-1.5 py-1 rounded border bg-transparent outline-none"
+          style="color: var(--text-muted); border-color: var(--border-subtle)"
+        >
+          <option :value="0">all confidence</option>
+          <option :value="0.5">≥ 0.5</option>
+          <option :value="0.7">≥ 0.7</option>
+          <option :value="0.85">≥ 0.85</option>
         </select>
 
         <!-- Reset -->

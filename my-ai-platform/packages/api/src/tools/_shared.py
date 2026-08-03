@@ -56,8 +56,10 @@ def _create_wikilink_edges(conn: sqlite3.Connection, from_id: str, titles: list[
         edge_id = str(uuid.uuid4())
         try:
             conn.execute(
-                "INSERT OR IGNORE INTO edges (id, from_id, to_id, relation) VALUES (?, ?, ?, 'wikilink')",
-                (edge_id, from_id, to_id),
+                """INSERT OR IGNORE INTO edges
+                   (id, from_id, to_id, relation, confidence, source, evidence, status)
+                   VALUES (?, ?, ?, 'wikilink', 1.0, 'wikilink', ?, 'confirmed')""",
+                (edge_id, from_id, to_id, f"[[{title}]]"),
             )
             conn.commit()
             # 检查是否真的插入了（OR IGNORE 可能跳过重复）
@@ -91,7 +93,7 @@ async def _background_embed(conn: sqlite3.Connection, note_id: str, title: str, 
             sim = 1.0 - (dist * dist) / 2.0
 
             if sim > 0.82:
-                # 高相似度：直接创建 suggested similar edge
+                # 高相似度：创建 suggested similar edge，并同步写入待确认建议。
                 edge_id = str(uuid.uuid4())
                 try:
                     conn.execute(
@@ -99,6 +101,18 @@ async def _background_embed(conn: sqlite3.Connection, note_id: str, title: str, 
                            (id, from_id, to_id, relation, confidence, source, evidence, status)
                            VALUES (?, ?, ?, 'similar', ?, 'embedding', ?, 'suggested')""",
                         (edge_id, note_id, h["note_id"], round(sim, 3),
+                         f"embedding similarity {sim:.3f} (distance={dist:.4f})"),
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
+                sid = str(uuid.uuid4())
+                try:
+                    conn.execute(
+                        """INSERT OR IGNORE INTO pending_suggestions
+                           (id, from_id, to_id, relation, confidence, evidence, suggestion_type)
+                           VALUES (?, ?, ?, 'similar', ?, ?, 'relation')""",
+                        (sid, note_id, h["note_id"], round(sim, 3),
                          f"embedding similarity {sim:.3f} (distance={dist:.4f})"),
                     )
                     conn.commit()

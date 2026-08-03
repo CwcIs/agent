@@ -18,6 +18,9 @@ export interface TraceSummary {
   ended_at: string;
   legacy: boolean;
   input_preview?: string;
+  input_message_id?: string;
+  output_preview?: string;
+  output_message_id?: string;
 }
 
 export interface TraceEvent {

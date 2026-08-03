@@ -27,12 +27,14 @@ from src.context.assemble import package_handoff, agent_display_name
 from src.lib.trace import record_trace_event, set_trace_context
 
 
-def _save_message(conn: sqlite3.Connection, session_id: str, agent_id: str, role: str, content: str) -> None:
+def _save_message(conn: sqlite3.Connection, session_id: str, agent_id: str, role: str, content: str) -> str:
+    message_id = str(uuid.uuid4())
     conn.execute(
         "INSERT INTO messages (id, session_id, agent_id, role, content) VALUES (?, ?, ?, ?, ?)",
-        (str(uuid.uuid4()), session_id, agent_id, role, content),
+        (message_id, session_id, agent_id, role, content),
     )
     conn.commit()
+    return message_id
 
 
 async def _run_one_agent(
@@ -129,8 +131,11 @@ async def _run_one_agent(
             await event_queue.put(event)
 
         # 持久化 assistant 回复 + 标记 worklist done
+        assistant_message_id = ""
         if conn and full_text:
-            _save_message(conn, session_id, agent_id, "assistant", full_text)
+            assistant_message_id = _save_message(
+                conn, session_id, agent_id, "assistant", full_text
+            )
         if conn and work_id:
             wl_mark_done(conn, work_id)
 
@@ -142,6 +147,7 @@ async def _run_one_agent(
             agent_id=agent_id,
             parent_agent_id=agent_a_id,
             full_text=full_text,
+            message_id=assistant_message_id,
             tool_call_count=completed_tool_count,
             mode="parallel",
         )

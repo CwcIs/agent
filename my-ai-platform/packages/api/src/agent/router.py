@@ -55,12 +55,21 @@ def _load_history(conn: sqlite3.Connection, session_id: str) -> list:
     return assemble_context(conn, session_id)
 
 
-def _save_message(conn: sqlite3.Connection, session_id: str, agent_id: str, role: str, content: str) -> None:
+def _save_message(
+    conn: sqlite3.Connection,
+    session_id: str,
+    agent_id: str,
+    role: str,
+    content: str,
+    message_id: str = "",
+) -> str:
+    persisted_id = message_id or str(uuid.uuid4())
     conn.execute(
         "INSERT INTO messages (id, session_id, agent_id, role, content) VALUES (?, ?, ?, ?, ?)",
-        (str(uuid.uuid4()), session_id, agent_id, role, content),
+        (persisted_id, session_id, agent_id, role, content),
     )
     conn.commit()
+    return persisted_id
 
 
 async def _route_serial_impl(
@@ -80,6 +89,7 @@ async def _route_serial_impl(
     产出带 agentId 的事件，与 BaseAgent.astream 相同格式。
     """
     root_trace_id = trace_id or str(uuid.uuid4())
+    user_message_id = str(uuid.uuid4())
     set_trace_context(root_trace_id, session_id=session_id, agent_id="router")
     record_trace_event(
         conn,
@@ -99,6 +109,7 @@ async def _route_serial_impl(
         session_id=session_id,
         agent_id="user",
         payload={
+            "message_id": user_message_id,
             "content_preview": user_input[:1000],
             "content_sha256": content_fingerprint(user_input),
             "char_count": len(user_input),
@@ -256,7 +267,14 @@ async def _route_serial_impl(
 
     # 持久化用户消息（在 assemble 之后，避免重复出现在历史中）
     if conn:
-        _save_message(conn, session_id, "user", "user", user_input)
+        _save_message(
+            conn,
+            session_id,
+            "user",
+            "user",
+            user_input,
+            message_id=user_message_id,
+        )
 
     queue: list[tuple[str, list, str | None]] = [(start_agent, first_messages, None)]  # (agent_id, messages, work_id)
     depth = 0
@@ -406,8 +424,11 @@ async def _route_serial_impl(
             continue  # 跳过 mention parsing，继续处理队列中下一个任务
 
         # 持久化 assistant 回复
+        assistant_message_id = ""
         if conn and full_text:
-            _save_message(conn, session_id, agent_id, "assistant", full_text)
+            assistant_message_id = _save_message(
+                conn, session_id, agent_id, "assistant", full_text
+            )
 
         record_agent_output_trace(
             conn,
@@ -416,6 +437,7 @@ async def _route_serial_impl(
             session_id=session_id,
             agent_id=agent_id,
             full_text=full_text,
+            message_id=assistant_message_id,
             tool_call_count=sum(
                 1 for event in tool_events if event["type"] == "tool_end"
             ),

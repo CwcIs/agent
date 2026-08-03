@@ -77,6 +77,7 @@ def record_agent_output_trace(
     session_id: str,
     agent_id: str,
     full_text: str,
+    message_id: str = "",
     tool_call_count: int = 0,
     depth: int | None = None,
     mode: str = "serial",
@@ -106,6 +107,9 @@ def record_agent_output_trace(
     payload = {
         "mode": mode,
         "output_chars": len(full_text),
+        "message_id": message_id,
+        "output_preview": full_text[:1000],
+        "output_truncated": len(full_text) > 1000,
         "output_sha256": content_fingerprint(full_text),
         "tool_call_count": tool_call_count,
         "retrieved_note_ids": retrieved_note_ids,
@@ -128,4 +132,3 @@ def record_agent_output_trace(
         payload=payload,
     )
     return retrieved_note_ids, cited_note_ids
-

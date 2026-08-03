@@ -9,6 +9,7 @@ from src.lib.trace import (
     set_trace_context,
     verify_trace_chain,
 )
+from src.agent.trace_events import record_agent_output_trace
 
 
 TRACE_SCHEMA = """
@@ -122,6 +123,22 @@ class TraceLedgerTests(unittest.TestCase):
         self.assertEqual(payload["api_key"], "[REDACTED]")
         self.assertEqual(payload["message"], "request failed with [REDACTED]")
         self.assertEqual(payload["input_tokens"], 42)
+
+    def test_agent_output_links_persisted_message_to_trace(self):
+        record_agent_output_trace(
+            self.conn,
+            root_trace_id="root-1",
+            phase_trace_id="phase-1",
+            session_id="session-1",
+            agent_id="knowledge",
+            full_text="这是一次可读的最终回复",
+            message_id="assistant-message-1",
+        )
+
+        event = json.loads(self.rows()[-1]["payload_json"])
+        self.assertEqual(event["message_id"], "assistant-message-1")
+        self.assertEqual(event["output_preview"], "这是一次可读的最终回复")
+        self.assertFalse(event["output_truncated"])
 
     def test_retrieval_and_exact_citation_are_linked(self):
         for event_type, agent_id in [

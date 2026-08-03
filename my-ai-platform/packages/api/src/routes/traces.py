@@ -173,6 +173,14 @@ def list_traces(limit: int = 50, conn: sqlite3.Connection = Depends(get_conn)):
             (event for event in decoded if event["event_type"] == "input_received"),
             None,
         )
+        output_event = next(
+            (
+                event for event in reversed(decoded)
+                if event["event_type"] == "agent_end"
+                and event["payload"].get("output_preview")
+            ),
+            None,
+        )
         traces.append({
             "trace_id": root["trace_id"],
             "session_id": root["session_id"],
@@ -192,6 +200,15 @@ def list_traces(limit: int = 50, conn: sqlite3.Connection = Depends(get_conn)):
             "legacy": False,
             "input_preview": (
                 input_event["payload"].get("content_preview", "") if input_event else ""
+            ),
+            "input_message_id": (
+                input_event["payload"].get("message_id", "") if input_event else ""
+            ),
+            "output_preview": (
+                output_event["payload"].get("output_preview", "") if output_event else ""
+            ),
+            "output_message_id": (
+                output_event["payload"].get("message_id", "") if output_event else ""
             ),
         })
 
@@ -237,6 +254,9 @@ def list_traces(limit: int = 50, conn: sqlite3.Connection = Depends(get_conn)):
                 "ended_at": row["ended_at"],
                 "legacy": True,
                 "input_preview": "",
+                "input_message_id": "",
+                "output_preview": "",
+                "output_message_id": "",
             })
             if len(traces) >= limit:
                 break

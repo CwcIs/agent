@@ -3,6 +3,8 @@ import { computed, ref } from "vue";
 import NoteListView from "../views/NoteListView.vue";
 import { agentMeta, layout } from "../shared/design-tokens";
 import type { ChatThread } from "../composables/useChatThreads";
+import { knowledgeNavigation } from "../navigation/model";
+import type { KnowledgeSection } from "../navigation/model";
 
 interface Note {
   id: string;
@@ -22,6 +24,7 @@ const props = defineProps<{
   threads: ChatThread[];
   activeSessionId: string;
   loadingThreads?: boolean;
+  knowledgeSection: KnowledgeSection;
 }>();
 
 const emit = defineEmits<{
@@ -32,6 +35,7 @@ const emit = defineEmits<{
   selectThread: [sessionId: string];
   updateThread: [sessionId: string, patch: { title?: string; pinned?: boolean; archived?: boolean }];
   openHub: [];
+  navigateKnowledge: [section: KnowledgeSection];
 }>();
 
 const noteListRef = ref<InstanceType<typeof NoteListView> | null>(null);
@@ -181,9 +185,19 @@ function commitRename(thread: ChatThread) {
           <p class="section-title">Knowledge</p>
           <span>{{ dailyNoteCount ?? 0 }} today</span>
         </div>
+        <nav class="knowledge-nav" aria-label="知识导航">
+          <button
+            v-for="item in knowledgeNavigation"
+            :key="item.id"
+            :class="{ active: knowledgeSection === item.id }"
+            :title="item.description"
+            @click="emit('navigateKnowledge', item.id)"
+          >{{ item.label }}</button>
+        </nav>
         <NoteListView
           ref="noteListRef"
           :selected-id="selectedNoteId"
+          :section="knowledgeSection"
           @note-selected="emit('noteSelected', $event)"
         />
       </section>
@@ -242,6 +256,7 @@ function commitRename(thread: ChatThread) {
 .primary-create span { font-size: 13px; font-weight: 700; }
 .primary-create .plus { font-size: 18px; font-weight: 400; }
 .primary-create:hover { background: #1b3038; border-color: #49717f; }
+.knowledge-nav{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;margin:4px 4px 2px;padding:3px;border-radius:7px;background:#0f1419}.knowledge-nav button{border-radius:5px;padding:5px 3px;color:var(--text-tertiary);font-size:9px}.knowledge-nav button.active{color:#d9eef2;background:#1b2a31}
 .section-head { display: flex; align-items: center; justify-content: space-between; }
 .section-head > span { padding-right: 7px; color: var(--text-tertiary); font-size: 10px; }
 .section-title {

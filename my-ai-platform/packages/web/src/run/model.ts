@@ -43,6 +43,9 @@ export interface RunProjection {
   approvals: ApprovalProjection[];
   timeline: RunEvent[];
   finalOutput: string;
+  currentGoal: string;
+  taskStatus: "active" | "waiting" | "completed" | "blocked";
+  referencedFiles: Array<{ name: string; path: string; status: string }>;
   lastSequence: number;
 }
 
@@ -55,6 +58,9 @@ export function createRunProjection(runId: string): RunProjection {
     approvals: [],
     timeline: [],
     finalOutput: "",
+    currentGoal: "",
+    taskStatus: "active",
+    referencedFiles: [],
     lastSequence: 0,
   };
 }

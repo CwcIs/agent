@@ -318,6 +318,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             prompt_version TEXT NOT NULL,
             final_verdict TEXT NOT NULL DEFAULT '',
             final_output  TEXT NOT NULL DEFAULT '',
+            current_goal  TEXT NOT NULL DEFAULT '',
+            task_status   TEXT NOT NULL DEFAULT 'active',
+            referenced_files_json TEXT NOT NULL DEFAULT '[]',
             error_json    TEXT NOT NULL DEFAULT '{}',
             started_at    TEXT NOT NULL,
             completed_at  TEXT
@@ -532,6 +535,16 @@ def init_db(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_retrieval_events_trace "
         "ON retrieval_events(trace_id, created_at)"
     )
+
+    for column, definition in [
+        ("current_goal", "TEXT NOT NULL DEFAULT ''"),
+        ("task_status", "TEXT NOT NULL DEFAULT 'active'"),
+        ("referenced_files_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE agent_runs ADD COLUMN {column} {definition}")
+        except Exception:
+            pass
 
     # ── 迁移（Phase 4A-1）：edges 增加 confidence / source / evidence / status 列 ──
     for col, default, col_type in [

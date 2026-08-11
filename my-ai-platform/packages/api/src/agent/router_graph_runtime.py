@@ -10,7 +10,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command
@@ -27,6 +27,7 @@ from src.agent.router_parser import parse_a2a_mentions, parse_user_tags
 from src.agent.run_events import append_run_event, create_run
 from src.agent.verdict import detect_verdict
 from src.context.assemble import agent_display_name, assemble_context, package_handoff
+from src.context.intent import IntentState, build_intent_state, format_intent_context
 
 MAX_A2A_DEPTH = 5
 MAX_AGENT_TURNS = 10
@@ -59,6 +60,7 @@ class GraphRuntimeState(TypedDict):
     verdict: str
     final_output: str
     error: dict[str, Any] | None
+    intent: IntentState
 
 
 def _save_message(
@@ -118,8 +120,15 @@ def build_router_graph(
             content=state["user_input"],
         )
         conn.execute(
-            "UPDATE agent_runs SET status='running', current_node='accept_input' WHERE id=?",
-            (state["run_id"],),
+            """UPDATE agent_runs
+               SET status='running', current_node='accept_input', current_goal=?,
+                   task_status=?, referenced_files_json=? WHERE id=?""",
+            (
+                state["intent"]["current_goal"],
+                state["intent"]["task_status"],
+                json.dumps(state["intent"]["referenced_files"], ensure_ascii=False),
+                state["run_id"],
+            ),
         )
         conn.commit()
         _emit(
@@ -137,7 +146,10 @@ def build_router_graph(
             state["session_id"],
             user_input=state["cleaned_input"],
         )
-        messages = history + [HumanMessage(content=state["cleaned_input"])]
+        messages = history + [
+            SystemMessage(content=format_intent_context(state["intent"])),
+            HumanMessage(content=state["cleaned_input"]),
+        ]
         _emit(
             conn,
             state,
@@ -341,7 +353,8 @@ def build_router_graph(
                 )
                 conn.execute(
                     """UPDATE agent_runs
-                       SET status='waiting_approval', current_node='approval_wait'
+                       SET status='waiting_approval', current_node='approval_wait',
+                           task_status='waiting'
                        WHERE id=?""",
                     (state["run_id"],),
                 )
@@ -652,7 +665,7 @@ def build_router_graph(
         conn.execute(
             """UPDATE agent_runs
                SET status=?, current_node='persist_result', final_verdict=?,
-                   final_output=?, error_json=?,
+                   final_output=?, error_json=?, task_status=?,
                    completed_at=datetime('now')
                WHERE id=?""",
             (
@@ -660,6 +673,7 @@ def build_router_graph(
                 state["verdict"],
                 state["final_output"],
                 "{}" if not state.get("error") else str(state["error"]),
+                "completed" if status == "completed" else "blocked",
                 state["run_id"],
             ),
         )
@@ -712,6 +726,9 @@ async def route_graph_stream(
     prompt_version: str = "v4",
     trace_id: str = "",
     checkpoint_path: str | Path | None = None,
+    current_goal: str = "",
+    task_status: str = "active",
+    referenced_files: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     run_id = create_run(
         conn,
@@ -742,6 +759,12 @@ async def route_graph_stream(
         "verdict": "incomplete",
         "final_output": "",
         "error": None,
+        "intent": build_intent_state(
+            user_input,
+            current_goal=current_goal,
+            task_status=task_status,
+            referenced_files=referenced_files,
+        ),
     }
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     checkpoint_file = str(checkpoint_path or CHECKPOINT_DB)
@@ -802,7 +825,8 @@ async def resume_graph_stream(
             ("allow" if approved else "deny", approval["proposal_id"]),
         )
         conn.execute(
-            "UPDATE agent_runs SET status='running', current_node='approval_wait' WHERE id=?",
+            """UPDATE agent_runs SET status='running', current_node='approval_wait',
+               task_status='active' WHERE id=?""",
             (run_id,),
         )
         conn.commit()

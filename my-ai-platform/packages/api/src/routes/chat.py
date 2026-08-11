@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from src.routes.dependencies import get_conn
@@ -15,14 +15,32 @@ from src.lib.chat_threads import get_history, list_threads, update_thread
 
 router = APIRouter()
 
-def _build_sse_generator(user_input: str, session_id: str, prompt_version: str, trace_id: str):
+def _build_sse_generator(
+    user_input: str,
+    session_id: str,
+    prompt_version: str,
+    trace_id: str,
+    *,
+    current_goal: str = "",
+    task_status: str = "active",
+    referenced_files: list[dict] | None = None,
+):
     """构建 SSE 事件生成器，GET 和 POST 共用。"""
     async def event_generator():
         from src.db.schema import get_conn as new_conn
         stream_conn = new_conn()
         from src.agent.router_graph_runtime import route_graph_stream
         try:
-            async for event in route_graph_stream(user_input, session_id, conn=stream_conn, prompt_version=prompt_version, trace_id=trace_id):
+            async for event in route_graph_stream(
+                user_input,
+                session_id,
+                conn=stream_conn,
+                prompt_version=prompt_version,
+                trace_id=trace_id,
+                current_goal=current_goal,
+                task_status=task_status,
+                referenced_files=referenced_files,
+            ):
                 etype = event.get("type")
 
                 if etype == "token":
@@ -130,6 +148,9 @@ class ChatStreamBody(BaseModel):
     input: str
     session_id: str = ""
     prompt_version: str = "v3"
+    current_goal: str = ""
+    task_status: str = "active"
+    referenced_files: list[dict] = Field(default_factory=list)
 
 
 class ChatThreadPatch(BaseModel):
@@ -186,7 +207,17 @@ async def chat_stream_post(body: ChatStreamBody):
 
     sid = body.session_id or str(uuid.uuid4())
     tid = str(uuid.uuid4())
-    return EventSourceResponse(_build_sse_generator(body.input, sid, body.prompt_version, tid))
+    return EventSourceResponse(
+        _build_sse_generator(
+            body.input,
+            sid,
+            body.prompt_version,
+            tid,
+            current_goal=body.current_goal,
+            task_status=body.task_status,
+            referenced_files=body.referenced_files,
+        )
+    )
 
 
 # ── GET /chat/stream（保留兼容）────────────────────────────

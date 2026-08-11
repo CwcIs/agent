@@ -14,6 +14,7 @@ import AdminView from "./views/AdminView.vue";
 import TopStatusBar from "./components/TopStatusBar.vue";
 import ToastProvider from "./components/ToastProvider.vue";
 import WorkbenchHub from "./components/WorkbenchHub.vue";
+import type { KnowledgeSection, WorkspaceSurface } from "./navigation/model";
 import { useChatThreads } from "./composables/useChatThreads";
 
 interface Note {
@@ -33,11 +34,9 @@ const chatRef = ref<InstanceType<typeof ChatView> | null>(null);
 const noteListRef = ref<InstanceType<typeof LeftRail> | null>(null);
 const toastRef = ref<InstanceType<typeof ToastProvider> | null>(null);
 const showCommercialPrototype = ref(false);
-const showTraceConsole = ref(false);
+const activeSurface = ref<WorkspaceSurface>("studio");
+const knowledgeSection = ref<KnowledgeSection>("inbox");
 const initialTraceId = ref<string | null>(null);
-const showGraphView = ref(false);
-const showProfileView = ref(false);
-const showAdminView = ref(false);
 const showWorkbenchHub = ref(false);
 const chatStreaming = ref(false);
 const runningAgents = ref<string[]>([]);
@@ -86,7 +85,7 @@ function handleNoteUpdated() {
 
 function handleGraphSelectNote(noteId: string) {
   // Close graph and open note in detail
-  showGraphView.value = false;
+  activeSurface.value = "studio";
   fetch(`/notes/${noteId}/relations`).catch(() => {});
   // Try to find title and show in detail
   fetch(`/notes`).then(r => r.json()).then(data => {
@@ -100,7 +99,7 @@ function handleGraphSelectNote(noteId: string) {
 
 function openTraceConsole(traceId?: string) {
   initialTraceId.value = traceId || null;
-  showTraceConsole.value = true;
+  activeSurface.value = "trace";
 }
 
 function handleNewThread() {
@@ -129,10 +128,7 @@ async function handleUpdateThread(
 
 function handleHubNavigation(target: "trace" | "graph" | "profile" | "admin" | "digest") {
   showWorkbenchHub.value = false;
-  if (target === "trace") showTraceConsole.value = true;
-  if (target === "graph") showGraphView.value = true;
-  if (target === "profile") showProfileView.value = true;
-  if (target === "admin") showAdminView.value = true;
+  if (target !== "digest") activeSurface.value = target;
   if (target === "digest") showDigest.value = true;
 }
 
@@ -162,33 +158,30 @@ function onKeydown(e: KeyboardEvent) {
   // Ctrl+Shift+T toggle Trace Console
   if (e.ctrlKey && e.shiftKey && e.key === "T") {
     e.preventDefault();
-    showTraceConsole.value = !showTraceConsole.value;
+    activeSurface.value = activeSurface.value === "trace" ? "studio" : "trace";
     return;
   }
   // Ctrl+Shift+G toggle GraphView
   if (e.ctrlKey && e.shiftKey && e.key === "G") {
     e.preventDefault();
-    showGraphView.value = !showGraphView.value;
+    activeSurface.value = activeSurface.value === "graph" ? "studio" : "graph";
     return;
   }
   // Ctrl+Shift+P toggle ProfileView
   if (e.ctrlKey && e.shiftKey && e.key === "P") {
     e.preventDefault();
-    showProfileView.value = !showProfileView.value;
+    activeSurface.value = activeSurface.value === "profile" ? "studio" : "profile";
     return;
   }
   // Ctrl+Shift+A toggle AdminView
   if (e.ctrlKey && e.shiftKey && e.key === "A") {
     e.preventDefault();
-    showAdminView.value = !showAdminView.value;
+    activeSurface.value = activeSurface.value === "admin" ? "studio" : "admin";
     return;
   }
   // Escape close drawer or overlays
   if (e.key === "Escape") {
-    if (showTraceConsole.value) { showTraceConsole.value = false; return; }
-    if (showGraphView.value) { showGraphView.value = false; return; }
-    if (showAdminView.value) { showAdminView.value = false; return; }
-    if (showProfileView.value) { showProfileView.value = false; return; }
+    if (activeSurface.value !== "studio") { activeSurface.value = "studio"; return; }
     if (showWorkbenchHub.value) { showWorkbenchHub.value = false; return; }
     if (drawerOpen.value) { handleDetailClose(); return; }
     return;
@@ -199,9 +192,9 @@ onMounted(() => {
   syncResponsiveLayout();
   const params = new URLSearchParams(window.location.search);
   showCommercialPrototype.value = params.get("prototype") === "1";
-  showTraceConsole.value = params.get("trace") === "1";
+  if (params.get("trace") === "1") activeSurface.value = "trace";
   initialTraceId.value = params.get("traceId");
-  showGraphView.value = params.get("graph") === "1";
+  if (params.get("graph") === "1") activeSurface.value = "graph";
   document.addEventListener("keydown", onKeydown);
   window.addEventListener("resize", syncResponsiveLayout);
   fetchDailyBadge();
@@ -288,29 +281,29 @@ provide("toast", toast);
   <CommercialPrototype v-if="showCommercialPrototype" />
 
   <!-- Trace Console (full-screen overlay, toggled via Ctrl+Shift+T or ?trace=1) -->
-  <div v-else-if="showTraceConsole" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
-    <TraceConsole :initial-trace-id="initialTraceId" @close="showTraceConsole = false" />
+  <div v-else-if="activeSurface === 'trace'" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
+    <TraceConsole :initial-trace-id="initialTraceId" @close="activeSurface = 'studio'" />
   </div>
 
   <!-- GraphView (full-screen overlay, toggled via Ctrl+Shift+G or ?graph=1) -->
-  <div v-else-if="showGraphView" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
+  <div v-else-if="activeSurface === 'graph'" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
     <GraphView @select-note="handleGraphSelectNote" />
   </div>
 
   <!-- ProfileView (full-screen overlay, toggled via Ctrl+Shift+P) -->
-  <div v-else-if="showProfileView" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
+  <div v-else-if="activeSurface === 'profile'" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
     <div class="flex items-center justify-between px-4 py-2 border-b shrink-0" style="border-color: var(--border-subtle)">
       <span class="text-xs" style="color: var(--text-muted)">Knowledge Profile</span>
-      <button class="text-xs px-2 py-1 rounded hover:brightness-110" style="color: var(--text-tertiary)" @click="showProfileView = false">Close</button>
+      <button class="text-xs px-2 py-1 rounded hover:brightness-110" style="color: var(--text-tertiary)" @click="activeSurface = 'studio'">Close</button>
     </div>
     <ProfileView />
   </div>
 
   <!-- AdminView (full-screen overlay, toggled via Ctrl+Shift+A) -->
-  <div v-else-if="showAdminView" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
+  <div v-else-if="activeSurface === 'admin'" class="absolute inset-0 z-50 flex flex-col" style="background: var(--bg-app)">
     <div class="flex items-center justify-between px-4 py-2 border-b shrink-0" style="border-color: var(--border-subtle)">
       <span class="text-xs" style="color: var(--text-muted)">Admin Panel</span>
-      <button class="text-xs px-2 py-1 rounded hover:brightness-110" style="color: var(--text-tertiary)" @click="showAdminView = false">Close</button>
+      <button class="text-xs px-2 py-1 rounded hover:brightness-110" style="color: var(--text-tertiary)" @click="activeSurface = 'studio'">Close</button>
     </div>
     <AdminView />
   </div>
@@ -327,6 +320,7 @@ provide("toast", toast);
         :threads="threads"
         :active-session-id="activeSessionId"
         :loading-threads="loadingThreads"
+        :knowledge-section="knowledgeSection"
         @toggle="sidebarOpen = !sidebarOpen"
         @note-selected="handleNoteSelected"
         @toggle-digest="showDigest = !showDigest"
@@ -334,6 +328,7 @@ provide("toast", toast);
         @select-thread="handleSelectThread"
         @update-thread="handleUpdateThread"
         @open-hub="showWorkbenchHub = true"
+        @navigate-knowledge="knowledgeSection = $event"
       />
     </template>
 

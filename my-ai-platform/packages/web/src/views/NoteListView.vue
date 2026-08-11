@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, inject } from "vue";
 import NoteCard from "../components/NoteCard.vue";
+import type { KnowledgeSection } from "../navigation/model";
 
 interface Note {
   id: string;
@@ -14,6 +15,7 @@ interface Note {
 
 const props = defineProps<{
   selectedId: string | null;
+  section: KnowledgeSection;
 }>();
 
 const emit = defineEmits<{
@@ -273,7 +275,7 @@ const SECTION_COLORS: Record<string, string> = {
       <!-- ──── 正常模式：分组视图 ──── -->
       <template v-else>
         <!-- Today -->
-        <section v-if="todayNotes.length" class="mb-3">
+        <section v-if="section === 'inbox' && todayNotes.length" class="mb-3">
           <div class="flex items-center gap-2 px-2 pb-1.5">
             <span class="w-1.5 h-1.5 rounded-full" :style="{ background: SECTION_COLORS['Today'] }" />
             <span class="text-[10px] font-semibold uppercase tracking-wider" style="color: #9AA4B2">Today</span>
@@ -290,7 +292,7 @@ const SECTION_COLORS: Record<string, string> = {
         </section>
 
         <!-- Active Ideas -->
-        <section v-if="activeNotes.length" class="mb-3">
+        <section v-if="section === 'notes' && activeNotes.length" class="mb-3">
           <div class="flex items-center gap-2 px-2 pb-1.5">
             <span class="w-1.5 h-1.5 rounded-full" :style="{ background: SECTION_COLORS['Active Ideas'] }" />
             <span class="text-[10px] font-semibold uppercase tracking-wider" style="color: #9AA4B2">Active Ideas</span>
@@ -307,7 +309,7 @@ const SECTION_COLORS: Record<string, string> = {
         </section>
 
         <!-- Evolving (superseded) -->
-        <section v-if="supersededNotes.length" class="mb-3">
+        <section v-if="section === 'notes' && supersededNotes.length" class="mb-3">
           <div class="flex items-center gap-2 px-2 pb-1.5">
             <span class="w-1.5 h-1.5 rounded-full" :style="{ background: SECTION_COLORS['Evolving'] }" />
             <span class="text-[10px] font-semibold uppercase tracking-wider" style="color: #9AA4B2">Evolving</span>
@@ -324,7 +326,7 @@ const SECTION_COLORS: Record<string, string> = {
         </section>
 
         <!-- Archived -->
-        <section v-if="archivedNotes.length">
+        <section v-if="section === 'archive' && archivedNotes.length">
           <details class="group/section" open>
             <summary class="flex items-center gap-2 px-2 pb-1.5 cursor-pointer select-none">
               <span class="w-1.5 h-1.5 rounded-full" :style="{ background: SECTION_COLORS['Archived'] }" />

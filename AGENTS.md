@@ -12,13 +12,13 @@
 
 **关键认知**：第二个不是"Agent 自主路由"，是 prompt 里教模型写 `@x` + 外部 30 行正则代码。
 
-## 当前状态：Phase 1 ✅ → Phase 2 ✅ → Phase 3 进行中
+## 当前状态：Phase 1–3 ✅ → Phase 4 进行中（Router Graph 已切流）
 
 **Phase 1**（2026-06-02 ~ 06-09）— [retro](my-ai-platform/docs/retro/phase1-retro.md) ✅ 全部验收通过
 
 **Phase 2**（2026-06-09 ~ 06-14）— [retro](my-ai-platform/docs/retro/phase2-retro.md) ✅ 10/10 项完成
 
-**Phase 3**（2026-06-16 ~）— 进行中。已知技术债全部清零，Gemini BrainAgent 上线。
+**Phase 3**（2026-06-16 ~ 06-22）— 已完成。已知技术债清零，Gemini BrainAgent 上线。
 - ✅ 向量检索：sqlite-vec + sentence-transformers（`d94a0a2`）
 - ✅ A2A 架构：Agent 注册表 + 路由循环 + `@agent` mention（`ad6df62`）
 - ✅ ReviewAgent：prompt-chained thought challenger（`a4259bb`）
@@ -34,7 +34,7 @@
 - 后端：Python + FastAPI + LangGraph
 - ⚠️ **与设计文档不一致**：MD §5.1 原计划是 TypeScript + Fastify 纯函数（不用框架）。实际实现改用了 Python + FastAPI + LangGraph。原因是 LangGraph Python 生态比 JS 成熟，且 FastAPI 对 SSE 支持更开箱即用。如果你要按设计文档重构回 TS，这个 CL 会很大。
 - 前端：Vue 3 + Vite + Tailwind
-- 存储：SQLite（6 张表 — 见 [schema.py](my-ai-platform/packages/api/src/db/schema.py)）
+- 存储：SQLite（24 张实体表 + FTS5 + sqlite-vec — 见 [schema.py](my-ai-platform/packages/api/src/db/schema.py)）
 - 通信：SSE（不是 WebSocket，Phase 1 只需服务端→客户端单向流）
 - 包管理：pnpm workspace
 
@@ -44,13 +44,15 @@ my-ai-platform/
 ├── packages/
 │   ├── api/          — FastAPI + LangGraph 后端
 │   │   └── src/
-│   │       ├── agent/        — 核心：registry / router / base / orchestrator / worklist / router_parser / verdict
+│   │       ├── agent/        — 核心：Router Graph runtime / registry / governance / ReAct Agents
 │   │       │   ├── agents/   — knowledge_agent / review_agent / brain_agent
 │   │       │   ├── graphs/   — react_tool_loop / a2a_orchestration / daily_digest / capture_note / idea_collision
 │   │       │   ├── providers/— deepseek / gpt / gemini
-│   │       │   └── states/   — AgentState 类型定义
-│   │       ├── context/      — assemble.py（三层记忆组装）
-│   │       ├── db/           — schema.py（8 张表 + FTS5 + sqlite-vec）
+│   │       │   ├── router_graph_runtime.py — 生产外层确定性 Router Graph
+│   │       │   ├── runtime_models.py — RouterState 与 Reducer
+│   │       │   └── run_events.py — Run 事件账本与哈希链
+│   │       ├── context/      — assemble.py（五层上下文）+ intent.py（显式任务意图）
+│   │       ├── db/           — schema.py（24 张实体表 + FTS5 + sqlite-vec）
 │   │       ├── lib/          — llm_call.py / budget.py / embeddings.py
 │   │       ├── tools/        — search_notes / save_note / get_note / archive_note / getNotesSummary / synthesize_notes
 │   │       ├── routes/       — SSE + REST
@@ -71,6 +73,26 @@ my-ai-platform/
 4. ✅ phase1-retro.md 写完
 
 ## 核心架构概念
+
+### 当前生产运行时（2026-08-11）
+
+- 外层：`router_graph_runtime.py` 管理输入、上下文、handoff governance、串并行、审批、checkpoint、verdict 和 Run Event。
+- 内层：每个 Agent 保留 LangGraph ReAct Tool Loop，自主决定允许范围内的工具调用。
+- `@mention` 仍只是候选 handoff；必须先转成 proposal 并通过 deterministic governance。
+- 生产 `/chat/stream` 已切换到 Router Graph；旧 `route_serial()` 仅保留兼容，不是生产入口。
+- Run 事实来源是 `agent_runs + run_events`；SSE 只负责传输，支持 `after_sequence` 补发。
+
+### 数据库地图（24 张实体表）
+
+| 领域 | 表 |
+|------|----|
+| 对话与知识 | `chat_threads`, `messages`, `notes`, `edges`, `pending_suggestions`, `idea_collisions`, `tag_aliases` |
+| 检索与来源 | `embedding_meta`, `retrieval_events`, `note_stats`, `source_trace` |
+| Agent 运行时 | `agent_runs`, `run_events`, `approval_requests`, `handoff_proposals`, `policy_decisions`, `execution_ledger`, `worklist` |
+| 观测与评估 | `trace_events`, `llm_calls`, `llm_errors`, `eval_runs` |
+| 产品扩展 | `daily_digests`, `custom_tools` |
+
+> 上表按实际 schema 分组；`notes_fts` 和 sqlite-vec 虚拟表不计入 24 张实体表。
 
 ### 三条记忆层（[MD §4.4](MY-AI-PLATFORM_1.md)）
 | 层 | 实现 | Clowder 对应 |

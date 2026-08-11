@@ -407,6 +407,7 @@ def build_router_graph(
             legacy_event={
                 "type": "approval_required",
                 "agentId": "router",
+                "run_id": state["run_id"],
                 **approval,
             },
             data=approval,

@@ -70,6 +70,8 @@ def append_run_event(
             "sequence": sequence,
             "type": event_type,
             "timestamp": timestamp,
+            "node_name": node_name,
+            "agent_id": agent_id,
             "data": data or {},
         }
         event_hash = _event_hash(previous_hash, envelope)
@@ -103,8 +105,8 @@ def list_run_events(
     conn: sqlite3.Connection, run_id: str, *, after_sequence: int = 0
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
-        """SELECT id, run_id, branch_id, sequence, event_type, payload_json,
-                  created_at
+        """SELECT id, run_id, branch_id, sequence, event_type, node_name,
+                  agent_id, payload_json, created_at
            FROM run_events
            WHERE run_id=? AND sequence>?
            ORDER BY sequence""",
@@ -118,6 +120,8 @@ def list_run_events(
             "sequence": row["sequence"],
             "type": row["event_type"],
             "timestamp": row["created_at"],
+            "node_name": row["node_name"],
+            "agent_id": row["agent_id"],
             "data": json.loads(row["payload_json"]),
         }
         for row in rows
@@ -126,8 +130,8 @@ def list_run_events(
 
 def verify_run_event_chain(conn: sqlite3.Connection, run_id: str) -> bool:
     rows = conn.execute(
-        """SELECT id, run_id, branch_id, sequence, event_type, payload_json,
-                  previous_hash, event_hash, created_at
+        """SELECT id, run_id, branch_id, sequence, event_type, node_name,
+                  agent_id, payload_json, previous_hash, event_hash, created_at
            FROM run_events WHERE run_id=? ORDER BY sequence""",
         (run_id,),
     ).fetchall()
@@ -140,6 +144,8 @@ def verify_run_event_chain(conn: sqlite3.Connection, run_id: str) -> bool:
             "sequence": row["sequence"],
             "type": row["event_type"],
             "timestamp": row["created_at"],
+            "node_name": row["node_name"],
+            "agent_id": row["agent_id"],
             "data": json.loads(row["payload_json"]),
         }
         if row["sequence"] != expected_sequence or row["previous_hash"] != previous_hash:

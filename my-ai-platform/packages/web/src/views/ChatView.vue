@@ -3,6 +3,7 @@ import { ref, nextTick, onMounted, onUnmounted, computed, watch } from "vue";
 import AgentDivider from "../components/AgentDivider.vue";
 import AgentTraceBar from "../components/AgentTraceBar.vue";
 import ChatTracePanel from "../components/ChatTracePanel.vue";
+import RunApprovalCard from "../components/RunApprovalCard.vue";
 import ThoughtBlock from "../components/ThoughtBlock.vue";
 import type { InsightChipData } from "../components/InsightChip.vue";
 import ThoughtComposer from "../components/ThoughtComposer.vue";
@@ -40,10 +41,19 @@ const {
 const messages = ref<Message[]>([]);
 const input = ref("");
 const streaming = ref(false);
+const resolvingApproval = ref(false);
+const pendingApproval = ref<null | {
+  runId: string;
+  approvalId: string;
+  targetAgent: string;
+  risk: string;
+  reason: string;
+}>(null);
 const activeTag = computed(() => parseTag(input.value));
 const messagesEl = ref<HTMLElement | null>(null);
 
 let abortController: AbortController | null = null;
+let activeEventHandler: ((eventType: string, data: string) => void) | null = null;
 let historyRequest = 0;
 
 async function loadHistory(sessionId: string) {
@@ -53,6 +63,7 @@ async function loadHistory(sessionId: string) {
   handoffSteps.value = [];
   currentVerdict.value = null;
   currentVerdictReason.value = null;
+  pendingApproval.value = null;
   resetTrace();
   try {
     const response = await fetch(`/chat/history?session_id=${encodeURIComponent(sessionId)}`);
@@ -301,6 +312,27 @@ function sendMessage() {
         break;
       }
 
+      case "approval_required": {
+        const parsed = JSON.parse(data);
+        clearStaleTimer();
+        pendingApproval.value = {
+          runId: parsed.run_id,
+          approvalId: parsed.approval_id,
+          targetAgent: parsed.target_agent,
+          risk: parsed.risk,
+          reason: parsed.reason,
+        };
+        streaming.value = false;
+        abortController = null;
+        break;
+      }
+
+      case "approval_resolved": {
+        pendingApproval.value = null;
+        resolvingApproval.value = false;
+        break;
+      }
+
       case "done": {
         clearStaleTimer();
         const last = messages.value[messages.value.length - 1];
@@ -351,6 +383,8 @@ function sendMessage() {
     }
   }
 
+  activeEventHandler = handleEvent;
+
   resetStaleTimer();
   fetch("/chat/stream", {
     method: "POST",
@@ -373,6 +407,34 @@ function sendMessage() {
       resetToolStatus();
       abortController = null;
     });
+}
+
+async function resolveApproval(approved: boolean) {
+  const approval = pendingApproval.value;
+  if (!approval || resolvingApproval.value) return;
+  resolvingApproval.value = true;
+  streaming.value = true;
+  abortController = new AbortController();
+  try {
+    const response = await fetch(
+      `/runs/${encodeURIComponent(approval.runId)}/approvals/${encodeURIComponent(approval.approvalId)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved }),
+        signal: abortController.signal,
+      },
+    );
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+    if (!activeEventHandler) throw new Error("missing active run event handler");
+    await readSSEStream(response.body.getReader(), activeEventHandler, abortController.signal);
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "AbortError")) {
+      console.error("Approval resume failed:", error);
+    }
+    streaming.value = false;
+    resolvingApproval.value = false;
+  }
 }
 
 function onInsightChipClick(chip: InsightChipData) {
@@ -513,6 +575,15 @@ onUnmounted(() => {
       @toggle="toggleTrace"
       @reset="resetToGlobalTrace"
       @inspect="emit('traceInspect', $event)"
+    />
+
+    <RunApprovalCard
+      v-if="pendingApproval"
+      :target-agent="pendingApproval.targetAgent"
+      :risk="pendingApproval.risk"
+      :reason="pendingApproval.reason"
+      :resolving="resolvingApproval"
+      @resolve="resolveApproval"
     />
 
     <ThoughtComposer

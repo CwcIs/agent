@@ -20,9 +20,9 @@ def _build_sse_generator(user_input: str, session_id: str, prompt_version: str, 
     async def event_generator():
         from src.db.schema import get_conn as new_conn
         stream_conn = new_conn()
-        from src.agent.router import route_serial
+        from src.agent.router_graph_runtime import route_graph_stream
         try:
-            async for event in route_serial(user_input, session_id, conn=stream_conn, prompt_version=prompt_version, trace_id=trace_id):
+            async for event in route_graph_stream(user_input, session_id, conn=stream_conn, prompt_version=prompt_version, trace_id=trace_id):
                 etype = event.get("type")
 
                 if etype == "token":
@@ -97,6 +97,12 @@ def _build_sse_generator(user_input: str, session_id: str, prompt_version: str, 
                             },
                             ensure_ascii=False,
                         ),
+                    }
+
+                elif etype in {"approval_required", "approval_resolved"}:
+                    yield {
+                        "event": etype,
+                        "data": json.dumps(event, ensure_ascii=False),
                     }
 
                 elif etype == "done":

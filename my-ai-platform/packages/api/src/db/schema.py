@@ -19,6 +19,9 @@
 #  15. source_trace    — 外部来源追踪（Phase 5.3）
 #  16. custom_tools    — 用户自定义 HTTP 工具
 #  17. trace_events    — 全链路、可校验执行事件账本
+#  18. agent_runs      — Hierarchical Router Graph 根运行
+#  19. run_events      — 可续传的统一运行事件账本
+#  20. approval_requests — 可跨进程恢复的人工审批请求
 # ============================================================
 
 import sqlite3
@@ -301,6 +304,59 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON trace_events(phase_trace_id, sequence);
         CREATE INDEX IF NOT EXISTS idx_trace_events_session
             ON trace_events(session_id, created_at);
+
+        -- Hierarchical Router Graph 根运行
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            id            TEXT PRIMARY KEY,
+            session_id    TEXT NOT NULL,
+            status        TEXT NOT NULL
+                              CHECK(status IN (
+                                  'created','running','waiting_approval',
+                                  'completed','failed','cancelled'
+                              )),
+            current_node  TEXT NOT NULL DEFAULT '',
+            prompt_version TEXT NOT NULL,
+            final_verdict TEXT NOT NULL DEFAULT '',
+            final_output  TEXT NOT NULL DEFAULT '',
+            error_json    TEXT NOT NULL DEFAULT '{}',
+            started_at    TEXT NOT NULL,
+            completed_at  TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_session
+            ON agent_runs(session_id, started_at);
+
+        -- SSE 只负责传输；这里是 Run 事件事实来源
+        CREATE TABLE IF NOT EXISTS run_events (
+            id            TEXT PRIMARY KEY,
+            run_id        TEXT NOT NULL REFERENCES agent_runs(id),
+            branch_id     TEXT NOT NULL DEFAULT '',
+            sequence      INTEGER NOT NULL,
+            event_type    TEXT NOT NULL,
+            node_name     TEXT NOT NULL DEFAULT '',
+            agent_id      TEXT NOT NULL DEFAULT '',
+            payload_json  TEXT NOT NULL DEFAULT '{}',
+            previous_hash TEXT NOT NULL DEFAULT '',
+            event_hash    TEXT NOT NULL,
+            created_at    TEXT NOT NULL,
+            UNIQUE(run_id, sequence)
+        );
+        CREATE INDEX IF NOT EXISTS idx_run_events_run
+            ON run_events(run_id, sequence);
+
+        CREATE TABLE IF NOT EXISTS approval_requests (
+            id            TEXT PRIMARY KEY,
+            run_id        TEXT NOT NULL REFERENCES agent_runs(id),
+            proposal_id   TEXT NOT NULL REFERENCES handoff_proposals(id),
+            status        TEXT NOT NULL DEFAULT 'pending'
+                              CHECK(status IN ('pending','approved','rejected')),
+            risk          TEXT NOT NULL DEFAULT '',
+            reason        TEXT NOT NULL DEFAULT '',
+            decision_json TEXT NOT NULL DEFAULT '{}',
+            created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            resolved_at   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_approval_requests_run
+            ON approval_requests(run_id, status, created_at);
 
         -- ⑯ custom_tools — 用户自定义 HTTP 工具（Phase 7.3）
         CREATE TABLE IF NOT EXISTS custom_tools (

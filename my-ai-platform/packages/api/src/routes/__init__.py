@@ -16,6 +16,7 @@ from src.routes.extensions import router as extensions_router
 from src.routes.imports import router as imports_router
 from src.routes.knowledge import router as knowledge_router
 from src.routes.notes import router as notes_router
+from src.routes.runs import router as runs_router
 from src.routes.traces import router as traces_router
 from src.routes.user import router as user_router
 
@@ -25,6 +26,7 @@ for feature_router in (
     chat_router,
     notes_router,
     traces_router,
+    runs_router,
     digest_router,
     knowledge_router,
     imports_router,
